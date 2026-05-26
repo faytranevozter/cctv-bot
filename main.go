@@ -8,12 +8,14 @@ import (
 
 	"github.com/faytranevozter/cctv-bot/bot"
 	"github.com/faytranevozter/cctv-bot/config"
+	"github.com/joho/godotenv"
 
 	tgbot "github.com/go-telegram/bot"
 )
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	godotenv.Load()
 
 	cfg, err := config.Load()
 	if err != nil {
