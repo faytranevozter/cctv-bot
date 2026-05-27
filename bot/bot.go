@@ -30,7 +30,6 @@ type commandHelp struct {
 }
 
 var commandHelpItems = []commandHelp{
-	{Command: "mataelang", Description: "Capture from the default camera"},
 	{Command: "snap", Description: "Capture from a specific camera", Usage: "/snap <name>"},
 	{Command: "cameras", Description: "List configured cameras"},
 	{Command: "addcam", Description: "Add a camera", Usage: "/addcam \"<name>\" <url>"},
@@ -111,8 +110,6 @@ func (h *Handler) DefaultHandler(ctx context.Context, b *tgbot.Bot, update *mode
 		h.cmdHelp(ctx, b, chatID)
 	case "/cameras":
 		h.cmdCameras(ctx, b, chatID)
-	case "/mataelang":
-		h.cmdMataelang(ctx, b, chatID, user)
 	case "/snap":
 		h.cmdSnap(ctx, b, chatID, user, rest)
 	case "/addcam":
@@ -274,18 +271,6 @@ func (h *Handler) cmdCameras(ctx context.Context, b *tgbot.Bot, chatID int64) {
 		fmt.Fprintf(&sb, "\n  %s\n", masked)
 	}
 	b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: sb.String()})
-}
-
-func (h *Handler) cmdMataelang(ctx context.Context, b *tgbot.Bot, chatID int64, user string) {
-	cam, ok := h.store.Default()
-	if !ok {
-		b.SendMessage(ctx, &tgbot.SendMessageParams{
-			ChatID: chatID,
-			Text:   "No cameras configured. Add one with /addcam.",
-		})
-		return
-	}
-	h.captureAndSend(ctx, b, chatID, user, cam)
 }
 
 func (h *Handler) cmdSnap(ctx context.Context, b *tgbot.Bot, chatID int64, user, arg string) {

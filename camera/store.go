@@ -119,16 +119,6 @@ func (s *Store) Count() int {
 	return len(s.cams)
 }
 
-// Default returns the first camera (used by /mataelang) and whether one exists.
-func (s *Store) Default() (Camera, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if len(s.cams) == 0 {
-		return Camera{}, false
-	}
-	return s.cams[0], true
-}
-
 // Find looks up a camera by case-insensitive name match.
 func (s *Store) Find(name string) (Camera, bool) {
 	s.mu.RLock()

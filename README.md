@@ -4,7 +4,6 @@ CCTV Bot is a Telegram bot that captures single JPEG frames from RTSP or RTMP ca
 
 ## Features
 
-- Capture a frame from the default camera.
 - Capture a frame from a named camera.
 - Capture a camera directly from a managed shortcut command such as `/gamping`.
 - Add, remove, and list cameras from Telegram chat.
@@ -22,7 +21,6 @@ The bot registers these commands with Telegram on startup:
 
 | Command | Description |
 | --- | --- |
-| `/mataelang` | Capture from the default camera. |
 | `/snap <name>` | Capture from a specific camera. |
 | `/cameras` | List configured cameras. |
 | `/addcam "<name>" <url>` | Add a camera. Quote names that contain spaces. |
@@ -97,7 +95,7 @@ MAX_CONCURRENT_CAPTURES=3
 
 ## Camera Storage
 
-Cameras are stored in a JSON file. The first entry is the default camera used by `/mataelang`.
+Cameras are stored in a JSON file. There is no default camera command; capture by camera name with `/snap <name>` or by a configured shortcut such as `/gamping`.
 
 When a camera is added with `/addcam`, the bot tries to create a shortcut automatically from the camera name:
 
