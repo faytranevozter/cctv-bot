@@ -1,13 +1,10 @@
 package camera
 
 import (
-	"encoding/json"
+	"database/sql"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
-	"sync"
 )
 
 // Camera is a configured stream entry.
@@ -17,13 +14,9 @@ type Camera struct {
 	URL      string `json:"url"`
 }
 
-// Store is a JSON-file-backed list of cameras with concurrent-safe access.
-// Reads are served from memory under an RLock; writes mutate the slice under
-// a write lock and persist atomically via a temp-file + os.Rename swap.
+// Store is a SQLite-backed camera store.
 type Store struct {
-	path string
-	mu   sync.RWMutex
-	cams []Camera
+	db *sql.DB
 }
 
 var (
@@ -34,101 +27,40 @@ var (
 	ErrInvalidShortcut = errors.New("camera shortcut is invalid")
 )
 
-// OpenStore loads cameras from the given JSON file. A missing file is treated
-// as an empty store; the file is created lazily on the first write.
-func OpenStore(path string) (*Store, error) {
-	s := &Store{path: path}
-	if err := s.load(); err != nil {
-		return nil, err
-	}
-	return s, nil
+func NewStore(db *sql.DB) *Store {
+	return &Store{db: db}
 }
 
-// Path returns the on-disk file path backing the store.
-func (s *Store) Path() string { return s.path }
-
-func (s *Store) load() error {
-	data, err := os.ReadFile(s.path)
-	if errors.Is(err, os.ErrNotExist) {
-		s.cams = nil
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("read cameras file: %w", err)
-	}
-	if len(data) == 0 {
-		s.cams = nil
-		return nil
-	}
-	var cams []Camera
-	if err := json.Unmarshal(data, &cams); err != nil {
-		return fmt.Errorf("parse cameras file %s: %w", s.path, err)
-	}
-	s.cams = cams
-	return nil
-}
-
-// save persists the current camera slice atomically.
-// Caller must hold the write lock.
-func (s *Store) save() error {
-	data, err := json.MarshalIndent(s.cams, "", "  ")
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-
-	dir := filepath.Dir(s.path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create cameras dir: %w", err)
-	}
-
-	tmp, err := os.CreateTemp(dir, ".cameras-*.json.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return fmt.Errorf("write temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := os.Rename(tmpPath, s.path); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("rename: %w", err)
-	}
-	return nil
-}
-
-// List returns a copy of the current camera list.
+// List returns all cameras ordered by insertion order.
 func (s *Store) List() []Camera {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]Camera, len(s.cams))
-	copy(out, s.cams)
-	return out
+	rows, err := s.db.Query(`SELECT name, COALESCE(shortcut, ''), url FROM cameras ORDER BY id`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var cams []Camera
+	for rows.Next() {
+		var cam Camera
+		if err := rows.Scan(&cam.Name, &cam.Shortcut, &cam.URL); err == nil {
+			cams = append(cams, cam)
+		}
+	}
+	return cams
 }
 
 // Count returns the number of cameras currently stored.
 func (s *Store) Count() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return len(s.cams)
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM cameras`).Scan(&count); err != nil {
+		return 0
+	}
+	return count
 }
 
 // Find looks up a camera by case-insensitive name match.
 func (s *Store) Find(name string) (Camera, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, c := range s.cams {
-		if strings.EqualFold(c.Name, name) {
-			return c, true
-		}
-	}
-	return Camera{}, false
+	return s.find(`SELECT name, COALESCE(shortcut, ''), url FROM cameras WHERE name = ? COLLATE NOCASE`, strings.TrimSpace(name))
 }
 
 // FindByShortcut looks up a camera by case-insensitive shortcut match.
@@ -137,14 +69,16 @@ func (s *Store) FindByShortcut(shortcut string) (Camera, bool) {
 	if shortcut == "" {
 		return Camera{}, false
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, c := range s.cams {
-		if c.Shortcut != "" && strings.EqualFold(c.Shortcut, shortcut) {
-			return c, true
-		}
+	return s.find(`SELECT name, COALESCE(shortcut, ''), url FROM cameras WHERE shortcut = ? COLLATE NOCASE`, shortcut)
+}
+
+func (s *Store) find(query, arg string) (Camera, bool) {
+	var cam Camera
+	err := s.db.QueryRow(query, arg).Scan(&cam.Name, &cam.Shortcut, &cam.URL)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Camera{}, false
 	}
-	return Camera{}, false
+	return cam, err == nil
 }
 
 // Add appends a new camera and persists. Returns ErrAlreadyExists if the name
@@ -156,18 +90,21 @@ func (s *Store) Add(cam Camera) error {
 	if cam.Name == "" || cam.URL == "" {
 		return ErrInvalid
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, c := range s.cams {
-		if strings.EqualFold(c.Name, cam.Name) {
-			return ErrAlreadyExists
-		}
-		if cam.Shortcut != "" && c.Shortcut != "" && strings.EqualFold(c.Shortcut, cam.Shortcut) {
+	if _, ok := s.Find(cam.Name); ok {
+		return ErrAlreadyExists
+	}
+	if cam.Shortcut != "" {
+		if _, ok := s.FindByShortcut(cam.Shortcut); ok {
 			return ErrShortcutTaken
 		}
 	}
-	s.cams = append(s.cams, cam)
-	return s.save()
+
+	shortcut := sql.NullString{String: cam.Shortcut, Valid: cam.Shortcut != ""}
+	_, err := s.db.Exec(`INSERT INTO cameras (name, shortcut, url) VALUES (?, ?, ?)`, cam.Name, shortcut, cam.URL)
+	if err != nil {
+		return fmt.Errorf("insert camera: %w", err)
+	}
+	return nil
 }
 
 // SetShortcut assigns a shortcut to a camera by case-insensitive camera name.
@@ -178,28 +115,22 @@ func (s *Store) SetShortcut(name, shortcut string) error {
 		return ErrInvalidShortcut
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	idx := -1
-	for i, c := range s.cams {
-		if strings.EqualFold(c.Name, name) {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
+	cam, ok := s.Find(name)
+	if !ok {
 		return ErrNotFound
 	}
-
-	for i, c := range s.cams {
-		if i != idx && c.Shortcut != "" && strings.EqualFold(c.Shortcut, shortcut) {
-			return ErrShortcutTaken
-		}
+	if existing, ok := s.FindByShortcut(shortcut); ok && !strings.EqualFold(existing.Name, cam.Name) {
+		return ErrShortcutTaken
 	}
 
-	s.cams[idx].Shortcut = shortcut
-	return s.save()
+	res, err := s.db.Exec(`UPDATE cameras SET shortcut = ?, updated_at = CURRENT_TIMESTAMP WHERE name = ? COLLATE NOCASE`, shortcut, name)
+	if err != nil {
+		return fmt.Errorf("set shortcut: %w", err)
+	}
+	if changed, _ := res.RowsAffected(); changed == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // DeleteShortcut removes a shortcut from a camera by case-insensitive camera name.
@@ -208,36 +139,51 @@ func (s *Store) DeleteShortcut(name string) error {
 	if name == "" {
 		return ErrNotFound
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i, c := range s.cams {
-		if strings.EqualFold(c.Name, name) {
-			s.cams[i].Shortcut = ""
-			return s.save()
-		}
+	res, err := s.db.Exec(`UPDATE cameras SET shortcut = NULL, updated_at = CURRENT_TIMESTAMP WHERE name = ? COLLATE NOCASE`, name)
+	if err != nil {
+		return fmt.Errorf("delete shortcut: %w", err)
 	}
-	return ErrNotFound
+	if changed, _ := res.RowsAffected(); changed == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // Remove deletes a camera by case-insensitive name. Returns ErrNotFound if absent.
 func (s *Store) Remove(name string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i, c := range s.cams {
-		if strings.EqualFold(c.Name, name) {
-			s.cams = append(s.cams[:i], s.cams[i+1:]...)
-			return s.save()
-		}
+	res, err := s.db.Exec(`DELETE FROM cameras WHERE name = ? COLLATE NOCASE`, strings.TrimSpace(name))
+	if err != nil {
+		return fmt.Errorf("delete camera: %w", err)
 	}
-	return ErrNotFound
+	if changed, _ := res.RowsAffected(); changed == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // Replace overwrites the entire camera list. Used for one-shot migration from
 // legacy environment-variable configuration.
 func (s *Store) Replace(cams []Camera) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.cams = append([]Camera(nil), cams...)
-	return s.save()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM cameras`); err != nil {
+		return err
+	}
+	for _, cam := range cams {
+		cam.Name = strings.TrimSpace(cam.Name)
+		cam.URL = strings.TrimSpace(cam.URL)
+		cam.Shortcut = strings.TrimPrefix(strings.TrimSpace(cam.Shortcut), "/")
+		if cam.Name == "" || cam.URL == "" {
+			continue
+		}
+		shortcut := sql.NullString{String: cam.Shortcut, Valid: cam.Shortcut != ""}
+		if _, err := tx.Exec(`INSERT INTO cameras (name, shortcut, url) VALUES (?, ?, ?)`, cam.Name, shortcut, cam.URL); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }

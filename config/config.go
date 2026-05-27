@@ -14,8 +14,7 @@ type Config struct {
 	BotToken              string
 	SuperuserIDs          map[int64]bool
 	AuthorizedChatIDs     []int64
-	AuthFile              string
-	CamerasFile           string
+	DBFile                string
 	LegacyCameras         []camera.Camera // parsed from CAMERA_N_NAME/_URL env vars, used only for one-shot migration
 	FFmpegBin             string
 	FFmpegTimeoutSec      int
@@ -25,8 +24,7 @@ type Config struct {
 func Load() (*Config, error) {
 	cfg := &Config{
 		SuperuserIDs:          make(map[int64]bool),
-		AuthFile:              envOr("AUTH_FILE", "authorized_chats.json"),
-		CamerasFile:           envOr("CAMERAS_FILE", "cameras.json"),
+		DBFile:                envOr("DB_FILE", "cctv_bot.db"),
 		FFmpegBin:             envOr("FFMPEG_BIN", "ffmpeg"),
 		FFmpegTimeoutSec:      envOrInt("FFMPEG_TIMEOUT_SEC", 15),
 		MaxConcurrentCaptures: envOrInt("MAX_CONCURRENT_CAPTURES", 3),

@@ -22,6 +22,8 @@ go.work.sum
 # Runtime stores
 cameras.json
 authorized_chats.json
+cctv_bot.db
+cctv_bot.db-*
 data/
 
 # IDE

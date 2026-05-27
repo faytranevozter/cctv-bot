@@ -14,6 +14,6 @@ RUN apk add --no-cache ffmpeg && adduser -D -u 1000 cctv \
 COPY --from=builder /app/cctv-bot /usr/local/bin/cctv-bot
 
 USER cctv
-ENV CAMERAS_FILE=/data/cameras.json
+ENV DB_FILE=/data/cctv_bot.db
 VOLUME ["/data"]
 ENTRYPOINT ["cctv-bot"]

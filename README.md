@@ -7,7 +7,7 @@ CCTV Bot is a Telegram bot that captures single JPEG frames from RTSP or RTMP ca
 - Capture a frame from a named camera.
 - Capture a camera directly from a managed shortcut command such as `/gamping`.
 - Add, remove, and list cameras from Telegram chat.
-- Persist camera configuration in a JSON file.
+- Persist camera and authorization data in SQLite.
 - Automatically create camera shortcuts when adding cameras when the generated shortcut is valid and available.
 - Automatically register built-in commands and camera shortcuts on startup so users can see them from the chat command menu.
 - Restrict access through superuser-approved chat authorization requests.
@@ -99,9 +99,8 @@ Optional variables:
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `AUTHORIZED_CHAT_IDS` | empty | Optional bootstrap list of pre-authorized chat IDs. Runtime approvals are stored in `AUTH_FILE`. |
-| `AUTH_FILE` | `authorized_chats.json` | Path to the JSON authorization store. |
-| `CAMERAS_FILE` | `cameras.json` | Path to the JSON camera store. Docker sets this to `/data/cameras.json`. |
+| `AUTHORIZED_CHAT_IDS` | empty | Optional bootstrap list of pre-authorized chat IDs. Runtime approvals are stored in `DB_FILE`. |
+| `DB_FILE` | `cctv_bot.db` | Path to the SQLite database. Docker sets this to `/data/cctv_bot.db`. |
 | `FFMPEG_BIN` | `ffmpeg` | FFmpeg executable path. |
 | `FFMPEG_TIMEOUT_SEC` | `15` | Capture timeout in seconds. |
 | `MAX_CONCURRENT_CAPTURES` | `3` | Maximum capture jobs running at the same time. |
@@ -112,8 +111,7 @@ Example:
 TELEGRAM_BOT_TOKEN=123456:ABC-DEF1234gh
 SUPERUSER_IDS=123456789
 AUTHORIZED_CHAT_IDS=123456789,-1001234567890
-AUTH_FILE=authorized_chats.json
-CAMERAS_FILE=cameras.json
+DB_FILE=cctv_bot.db
 FFMPEG_BIN=ffmpeg
 FFMPEG_TIMEOUT_SEC=15
 MAX_CONCURRENT_CAPTURES=3
@@ -137,7 +135,7 @@ When a request is created, each superuser receives a private message with inline
 [Approve] [Reject]
 ```
 
-Approving a request authorizes the chat and stores it in `AUTH_FILE`. Rejecting removes the pending request.
+Approving a request authorizes the chat and stores it in `DB_FILE`. Rejecting removes the pending request.
 
 Superusers can manage access from their private chat:
 
@@ -147,9 +145,9 @@ Superusers can manage access from their private chat:
 
 The dashboard shows both authorized chats and pending requests. Authorized chats have a manage button that opens a revoke screen. Pending requests have approve/reject buttons.
 
-## Camera Storage
+## Storage
 
-Cameras are stored in a JSON file. There is no default camera command; capture by camera name with `/snap <name>` or by a configured shortcut such as `/gamping`.
+Cameras, authorized chats, and pending access requests are stored in SQLite. There is no default camera command; capture by camera name with `/snap <name>` or by a configured shortcut such as `/gamping`.
 
 When a camera is added with `/addcam`, the bot tries to create a shortcut automatically from the camera name:
 
@@ -162,19 +160,15 @@ When a camera is added with `/addcam`, the bot tries to create a shortcut automa
 
 Shortcuts must be 1-32 characters and contain only lowercase letters, numbers, and underscores. Built-in commands such as `/help`, `/snap`, and `/cameras` are reserved and cannot be used as camera shortcuts.
 
-Example `cameras.json`:
+Relevant tables:
 
-```json
-[
-  {
-    "name": "Front Gate",
-    "shortcut": "front_gate",
-    "url": "rtsp://user:pass@192.168.1.10/stream"
-  }
-]
+```text
+cameras
+authorized_chats
+pending_access_requests
 ```
 
-The store is safe for concurrent reads and writes. Updates are written atomically with a temporary file and rename.
+SQLite is opened with WAL mode and a busy timeout so runtime updates can be handled safely by the bot process.
 
 The `shortcut` field is optional. Existing camera entries without shortcuts still work with `/snap <name>` and can be assigned a shortcut later:
 
@@ -182,7 +176,7 @@ The `shortcut` field is optional. Existing camera entries without shortcuts stil
 /setshortcut "Front Gate" front_gate
 ```
 
-If the JSON file is empty and legacy `CAMERA_N_NAME` / `CAMERA_N_URL` variables are present, the bot migrates them into the JSON file once on startup. After that, the JSON file is the source of truth.
+If the camera table is empty and legacy `CAMERA_N_NAME` / `CAMERA_N_URL` variables are present, the bot migrates them into SQLite once on startup. After that, SQLite is the source of truth.
 
 ## Local Development
 
@@ -225,7 +219,7 @@ make docker-run
 The Docker image sets:
 
 ```env
-CAMERAS_FILE=/data/cameras.json
+DB_FILE=/data/cctv_bot.db
 ```
 
 The `./data` directory on the host is mounted to `/data` in the container so camera configuration survives container restarts.
@@ -271,7 +265,7 @@ Add one from Telegram:
 /addcam "Front Gate" rtsp://user:pass@192.168.1.10/stream
 ```
 
-Or edit `cameras.json` directly.
+The camera is stored in SQLite.
 
 ### A shortcut was not created automatically
 
@@ -297,17 +291,17 @@ cctv-bot/
 ├── bot/
 │   └── bot.go           # Command handlers, command registration data, access checks
 ├── auth/
-│   └── store.go         # JSON-backed authorization store
+│   └── store.go         # SQLite-backed authorization store
 ├── camera/
 │   ├── capture.go       # FFmpeg frame capture
-│   ├── store.go         # JSON-backed camera store
+│   ├── store.go         # SQLite-backed camera store
 │   └── stream.go        # Camera URL credential masking
 ├── config/
 │   └── config.go        # Environment-based configuration loader
 ├── docs/
 │   └── brief.md         # Original implementation brief
 ├── .env.example         # Example environment configuration
-├── cameras.json         # Default local camera store
+├── database/            # SQLite connection and schema setup
 ├── Dockerfile           # Multi-stage Docker build with FFmpeg runtime
 ├── Makefile             # Local development and Docker commands
 └── README.md

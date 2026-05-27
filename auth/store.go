@@ -1,13 +1,8 @@
 package auth
 
 import (
-	"encoding/json"
-	"errors"
+	"database/sql"
 	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
-	"sync"
 	"time"
 )
 
@@ -30,191 +25,156 @@ type Request struct {
 	RequestedAt         time.Time `json:"requested_at"`
 }
 
-type data struct {
-	AuthorizedChats []AuthorizedChat `json:"authorized_chats"`
-	PendingRequests []Request        `json:"pending_requests"`
-}
-
 type Store struct {
-	path string
-	mu   sync.RWMutex
-	data data
+	db *sql.DB
 }
 
-func OpenStore(path string, bootstrapIDs []int64) (*Store, error) {
-	s := &Store{path: path}
-	if err := s.load(); err != nil {
-		return nil, err
-	}
-	changed := false
+func NewStore(db *sql.DB, bootstrapIDs []int64) (*Store, error) {
+	s := &Store{db: db}
 	for _, id := range bootstrapIDs {
-		if id == 0 || s.isAuthorizedLocked(id) {
+		if id == 0 || s.IsAuthorized(id) {
 			continue
 		}
-		s.data.AuthorizedChats = append(s.data.AuthorizedChats, AuthorizedChat{ChatID: id})
-		changed = true
-	}
-	if changed {
-		if err := s.save(); err != nil {
+		if err := s.AddAuthorized(AuthorizedChat{ChatID: id}); err != nil {
 			return nil, err
 		}
 	}
 	return s, nil
 }
 
-func (s *Store) Path() string { return s.path }
-
-func (s *Store) load() error {
-	data, err := os.ReadFile(s.path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("read auth file: %w", err)
-	}
-	if len(data) == 0 {
-		return nil
-	}
-	if err := json.Unmarshal(data, &s.data); err != nil {
-		return fmt.Errorf("parse auth file %s: %w", s.path, err)
-	}
-	return nil
-}
-
-// save persists the current store atomically. Caller must hold the write lock
-// unless the store is still private during initialization.
-func (s *Store) save() error {
-	data, err := json.MarshalIndent(s.data, "", "  ")
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-
-	dir := filepath.Dir(s.path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create auth dir: %w", err)
-	}
-
-	tmp, err := os.CreateTemp(dir, ".auth-*.json.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return fmt.Errorf("write temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := os.Rename(tmpPath, s.path); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("rename: %w", err)
-	}
-	return nil
-}
-
 func (s *Store) IsAuthorized(chatID int64) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.isAuthorizedLocked(chatID)
-}
-
-func (s *Store) isAuthorizedLocked(chatID int64) bool {
-	for _, chat := range s.data.AuthorizedChats {
-		if chat.ChatID == chatID {
-			return true
-		}
-	}
-	return false
+	var exists int
+	err := s.db.QueryRow(`SELECT 1 FROM authorized_chats WHERE chat_id = ?`, chatID).Scan(&exists)
+	return err == nil
 }
 
 func (s *Store) AddAuthorized(chat AuthorizedChat) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i, existing := range s.data.AuthorizedChats {
-		if existing.ChatID == chat.ChatID {
-			s.data.AuthorizedChats[i] = chat
-			return s.save()
-		}
+	approvedAt := timeString(chat.ApprovedAt)
+	_, err := s.db.Exec(`INSERT INTO authorized_chats (chat_id, chat_type, chat_title, approved_by_id, approved_by_username, approved_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(chat_id) DO UPDATE SET
+			chat_type = excluded.chat_type,
+			chat_title = excluded.chat_title,
+			approved_by_id = excluded.approved_by_id,
+			approved_by_username = excluded.approved_by_username,
+			approved_at = excluded.approved_at`,
+		chat.ChatID, chat.ChatType, chat.ChatTitle, nullInt(chat.ApprovedByID), chat.ApprovedByUsername, approvedAt)
+	if err != nil {
+		return fmt.Errorf("add authorized chat: %w", err)
 	}
-	s.data.AuthorizedChats = append(s.data.AuthorizedChats, chat)
-	s.sortLocked()
-	return s.save()
+	return nil
 }
 
 func (s *Store) RemoveAuthorized(chatID int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i, chat := range s.data.AuthorizedChats {
-		if chat.ChatID == chatID {
-			s.data.AuthorizedChats = append(s.data.AuthorizedChats[:i], s.data.AuthorizedChats[i+1:]...)
-			return s.save()
-		}
+	_, err := s.db.Exec(`DELETE FROM authorized_chats WHERE chat_id = ?`, chatID)
+	if err != nil {
+		return fmt.Errorf("remove authorized chat: %w", err)
 	}
 	return nil
 }
 
 func (s *Store) UpsertPending(req Request) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i, existing := range s.data.PendingRequests {
-		if existing.ChatID == req.ChatID {
-			s.data.PendingRequests[i] = req
-			return s.save()
-		}
+	_, err := s.db.Exec(`INSERT INTO pending_access_requests (chat_id, chat_type, chat_title, requested_by_id, requested_by_username, reason, requested_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(chat_id) DO UPDATE SET
+			chat_type = excluded.chat_type,
+			chat_title = excluded.chat_title,
+			requested_by_id = excluded.requested_by_id,
+			requested_by_username = excluded.requested_by_username,
+			reason = excluded.reason,
+			requested_at = excluded.requested_at`,
+		req.ChatID, req.ChatType, req.ChatTitle, req.RequestedByID, req.RequestedByUsername, req.Reason, req.RequestedAt.Format(time.RFC3339))
+	if err != nil {
+		return fmt.Errorf("upsert pending request: %w", err)
 	}
-	s.data.PendingRequests = append(s.data.PendingRequests, req)
-	s.sortLocked()
-	return s.save()
+	return nil
 }
 
 func (s *Store) RemovePending(chatID int64) (Request, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i, req := range s.data.PendingRequests {
-		if req.ChatID == chatID {
-			s.data.PendingRequests = append(s.data.PendingRequests[:i], s.data.PendingRequests[i+1:]...)
-			return req, true, s.save()
-		}
+	req, ok := s.Pending(chatID)
+	if !ok {
+		return Request{}, false, nil
 	}
-	return Request{}, false, nil
+	if _, err := s.db.Exec(`DELETE FROM pending_access_requests WHERE chat_id = ?`, chatID); err != nil {
+		return Request{}, false, fmt.Errorf("remove pending request: %w", err)
+	}
+	return req, true, nil
 }
 
 func (s *Store) Pending(chatID int64) (Request, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, req := range s.data.PendingRequests {
-		if req.ChatID == chatID {
-			return req, true
-		}
+	rows, err := s.db.Query(`SELECT chat_id, chat_type, COALESCE(chat_title, ''), requested_by_id, COALESCE(requested_by_username, ''), COALESCE(reason, ''), requested_at FROM pending_access_requests WHERE chat_id = ?`, chatID)
+	if err != nil {
+		return Request{}, false
 	}
-	return Request{}, false
+	defer rows.Close()
+	reqs := scanRequests(rows)
+	if len(reqs) == 0 {
+		return Request{}, false
+	}
+	return reqs[0], true
 }
 
 func (s *Store) ListAuthorized() []AuthorizedChat {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]AuthorizedChat, len(s.data.AuthorizedChats))
-	copy(out, s.data.AuthorizedChats)
+	rows, err := s.db.Query(`SELECT chat_id, COALESCE(chat_type, ''), COALESCE(chat_title, ''), COALESCE(approved_by_id, 0), COALESCE(approved_by_username, ''), COALESCE(approved_at, '') FROM authorized_chats ORDER BY chat_id`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var out []AuthorizedChat
+	for rows.Next() {
+		var chat AuthorizedChat
+		var approvedAt string
+		if err := rows.Scan(&chat.ChatID, &chat.ChatType, &chat.ChatTitle, &chat.ApprovedByID, &chat.ApprovedByUsername, &approvedAt); err != nil {
+			continue
+		}
+		chat.ApprovedAt = parseTime(approvedAt)
+		out = append(out, chat)
+	}
 	return out
 }
 
 func (s *Store) ListPending() []Request {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]Request, len(s.data.PendingRequests))
-	copy(out, s.data.PendingRequests)
+	rows, err := s.db.Query(`SELECT chat_id, chat_type, COALESCE(chat_title, ''), requested_by_id, COALESCE(requested_by_username, ''), COALESCE(reason, ''), requested_at FROM pending_access_requests ORDER BY chat_id`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	return scanRequests(rows)
+}
+
+func scanRequests(rows *sql.Rows) []Request {
+	var out []Request
+	for rows.Next() {
+		var req Request
+		var requestedAt string
+		if err := rows.Scan(&req.ChatID, &req.ChatType, &req.ChatTitle, &req.RequestedByID, &req.RequestedByUsername, &req.Reason, &requestedAt); err != nil {
+			continue
+		}
+		req.RequestedAt = parseTime(requestedAt)
+		out = append(out, req)
+	}
 	return out
 }
 
-func (s *Store) sortLocked() {
-	sort.Slice(s.data.AuthorizedChats, func(i, j int) bool {
-		return s.data.AuthorizedChats[i].ChatID < s.data.AuthorizedChats[j].ChatID
-	})
-	sort.Slice(s.data.PendingRequests, func(i, j int) bool {
-		return s.data.PendingRequests[i].ChatID < s.data.PendingRequests[j].ChatID
-	})
+func nullInt(v int64) sql.NullInt64 {
+	return sql.NullInt64{Int64: v, Valid: v != 0}
+}
+
+func timeString(t time.Time) sql.NullString {
+	if t.IsZero() {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: t.Format(time.RFC3339), Valid: true}
+}
+
+func parseTime(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
