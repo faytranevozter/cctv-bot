@@ -12,8 +12,9 @@ import (
 
 // Camera is a configured stream entry.
 type Camera struct {
-	Name string `json:"name"`
-	URL  string `json:"url"`
+	Name     string `json:"name"`
+	Shortcut string `json:"shortcut,omitempty"`
+	URL      string `json:"url"`
 }
 
 // Store is a JSON-file-backed list of cameras with concurrent-safe access.
@@ -26,9 +27,11 @@ type Store struct {
 }
 
 var (
-	ErrAlreadyExists = errors.New("camera already exists")
-	ErrNotFound      = errors.New("camera not found")
-	ErrInvalid       = errors.New("camera name and url are required")
+	ErrAlreadyExists   = errors.New("camera already exists")
+	ErrShortcutTaken   = errors.New("camera shortcut already exists")
+	ErrNotFound        = errors.New("camera not found")
+	ErrInvalid         = errors.New("camera name and url are required")
+	ErrInvalidShortcut = errors.New("camera shortcut is invalid")
 )
 
 // OpenStore loads cameras from the given JSON file. A missing file is treated
@@ -138,11 +141,28 @@ func (s *Store) Find(name string) (Camera, bool) {
 	return Camera{}, false
 }
 
+// FindByShortcut looks up a camera by case-insensitive shortcut match.
+func (s *Store) FindByShortcut(shortcut string) (Camera, bool) {
+	shortcut = strings.TrimPrefix(strings.TrimSpace(shortcut), "/")
+	if shortcut == "" {
+		return Camera{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, c := range s.cams {
+		if c.Shortcut != "" && strings.EqualFold(c.Shortcut, shortcut) {
+			return c, true
+		}
+	}
+	return Camera{}, false
+}
+
 // Add appends a new camera and persists. Returns ErrAlreadyExists if the name
 // (case-insensitive) is already taken.
 func (s *Store) Add(cam Camera) error {
 	cam.Name = strings.TrimSpace(cam.Name)
 	cam.URL = strings.TrimSpace(cam.URL)
+	cam.Shortcut = strings.TrimPrefix(strings.TrimSpace(cam.Shortcut), "/")
 	if cam.Name == "" || cam.URL == "" {
 		return ErrInvalid
 	}
@@ -152,9 +172,62 @@ func (s *Store) Add(cam Camera) error {
 		if strings.EqualFold(c.Name, cam.Name) {
 			return ErrAlreadyExists
 		}
+		if cam.Shortcut != "" && c.Shortcut != "" && strings.EqualFold(c.Shortcut, cam.Shortcut) {
+			return ErrShortcutTaken
+		}
 	}
 	s.cams = append(s.cams, cam)
 	return s.save()
+}
+
+// SetShortcut assigns a shortcut to a camera by case-insensitive camera name.
+func (s *Store) SetShortcut(name, shortcut string) error {
+	name = strings.TrimSpace(name)
+	shortcut = strings.TrimPrefix(strings.TrimSpace(shortcut), "/")
+	if name == "" || shortcut == "" {
+		return ErrInvalidShortcut
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	idx := -1
+	for i, c := range s.cams {
+		if strings.EqualFold(c.Name, name) {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return ErrNotFound
+	}
+
+	for i, c := range s.cams {
+		if i != idx && c.Shortcut != "" && strings.EqualFold(c.Shortcut, shortcut) {
+			return ErrShortcutTaken
+		}
+	}
+
+	s.cams[idx].Shortcut = shortcut
+	return s.save()
+}
+
+// DeleteShortcut removes a shortcut from a camera by case-insensitive camera name.
+func (s *Store) DeleteShortcut(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ErrNotFound
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, c := range s.cams {
+		if strings.EqualFold(c.Name, name) {
+			s.cams[i].Shortcut = ""
+			return s.save()
+		}
+	}
+	return ErrNotFound
 }
 
 // Remove deletes a camera by case-insensitive name. Returns ErrNotFound if absent.
