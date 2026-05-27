@@ -29,6 +29,17 @@ The bot registers these commands with Telegram on startup:
 | `/delshortcut <name>` | Remove a camera shortcut. |
 | `/help` | Show the command reference. |
 
+Management commands are admin-only in groups and supergroups:
+
+```text
+/addcam
+/delcam
+/setshortcut
+/delshortcut
+```
+
+In private chats, these commands are allowed when the private chat ID is listed in `ALLOWED_CHAT_IDS`.
+
 Camera shortcuts are also registered as commands. For example, if camera `Gamping` has shortcut `gamping`, users can run:
 
 ```text
@@ -180,6 +191,7 @@ The `./data` directory on the host is mounted to `/data` in the container so cam
 
 - Only chat IDs in `ALLOWED_CHAT_IDS` can use the bot.
 - Unauthorized chats are ignored.
+- In groups and supergroups, only Telegram admins can add/remove cameras or manage shortcuts.
 - Do not commit `.env`, real bot tokens, or private camera stream URLs.
 - Camera stream credentials are masked in bot replies and logs where URLs are displayed.
 - The bot uses long polling and does not expose an HTTP port.
