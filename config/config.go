@@ -3,11 +3,8 @@ package config
 import (
 	"fmt"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
-
-	"github.com/faytranevozter/cctv-bot/camera"
 )
 
 type Config struct {
@@ -15,7 +12,6 @@ type Config struct {
 	SuperuserIDs          map[int64]bool
 	AuthorizedChatIDs     []int64
 	DBFile                string
-	LegacyCameras         []camera.Camera // parsed from CAMERA_N_NAME/_URL env vars, used only for one-shot migration
 	FFmpegBin             string
 	FFmpegTimeoutSec      int
 	MaxConcurrentCaptures int
@@ -50,8 +46,6 @@ func Load() (*Config, error) {
 	}
 	cfg.AuthorizedChatIDs = authorized
 
-	cfg.LegacyCameras = parseLegacyCameras()
-
 	return cfg, nil
 }
 
@@ -81,57 +75,6 @@ func parseIDList(raw, field string) ([]int64, error) {
 		ids = append(ids, id)
 	}
 	return ids, nil
-}
-
-// parseLegacyCameras reads CAMERA_N_NAME / CAMERA_N_URL pairs from the
-// environment. These are no longer the authoritative source; they are kept
-// only to migrate existing deployments into the JSON store on first run.
-func parseLegacyCameras() []camera.Camera {
-	type kv struct{ name, url string }
-	pairs := make(map[int]kv)
-
-	for _, e := range os.Environ() {
-		parts := strings.SplitN(e, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		key, val := parts[0], parts[1]
-
-		if !strings.HasPrefix(key, "CAMERA_") {
-			continue
-		}
-		switch {
-		case strings.HasSuffix(key, "_NAME"):
-			nStr := strings.TrimSuffix(strings.TrimPrefix(key, "CAMERA_"), "_NAME")
-			if n, err := strconv.Atoi(nStr); err == nil {
-				p := pairs[n]
-				p.name = val
-				pairs[n] = p
-			}
-		case strings.HasSuffix(key, "_URL"):
-			nStr := strings.TrimSuffix(strings.TrimPrefix(key, "CAMERA_"), "_URL")
-			if n, err := strconv.Atoi(nStr); err == nil {
-				p := pairs[n]
-				p.url = val
-				pairs[n] = p
-			}
-		}
-	}
-
-	indices := make([]int, 0, len(pairs))
-	for n := range pairs {
-		indices = append(indices, n)
-	}
-	sort.Ints(indices)
-
-	cams := make([]camera.Camera, 0, len(indices))
-	for _, n := range indices {
-		p := pairs[n]
-		if p.name != "" && p.url != "" {
-			cams = append(cams, camera.Camera{Name: p.name, URL: p.url})
-		}
-	}
-	return cams
 }
 
 func envOr(key, def string) string {

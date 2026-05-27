@@ -160,30 +160,3 @@ func (s *Store) Remove(name string) error {
 	}
 	return nil
 }
-
-// Replace overwrites the entire camera list. Used for one-shot migration from
-// legacy environment-variable configuration.
-func (s *Store) Replace(cams []Camera) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	if _, err := tx.Exec(`DELETE FROM cameras`); err != nil {
-		return err
-	}
-	for _, cam := range cams {
-		cam.Name = strings.TrimSpace(cam.Name)
-		cam.URL = strings.TrimSpace(cam.URL)
-		cam.Shortcut = strings.TrimPrefix(strings.TrimSpace(cam.Shortcut), "/")
-		if cam.Name == "" || cam.URL == "" {
-			continue
-		}
-		shortcut := sql.NullString{String: cam.Shortcut, Valid: cam.Shortcut != ""}
-		if _, err := tx.Exec(`INSERT INTO cameras (name, shortcut, url) VALUES (?, ?, ?)`, cam.Name, shortcut, cam.URL); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}

@@ -58,10 +58,6 @@ cctv-bot/
 - The file is created lazily on the first write; a missing or empty file is treated as an empty list.
 - Lookups (`/snap`, `/delcam`) match camera names case-insensitively.
 
-#### Migration from env vars
-- For backwards compatibility, on startup the loader still parses `CAMERA_N_NAME` / `CAMERA_N_URL` pairs.
-- If the JSON file is empty and legacy env vars are present, the env values are written to the file once (logged at INFO). On every subsequent run the file is the source of truth and the env vars are ignored.
-
 ### 5. Security
 - Allowlist of authorized Telegram chat IDs from env: `ALLOWED_CHAT_IDS=123456,789012`.
 - Commands from unauthorized chats are silently dropped.

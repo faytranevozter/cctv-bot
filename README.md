@@ -176,8 +176,6 @@ The `shortcut` field is optional. Existing camera entries without shortcuts stil
 /setshortcut "Front Gate" front_gate
 ```
 
-If the camera table is empty and legacy `CAMERA_N_NAME` / `CAMERA_N_URL` variables are present, the bot migrates them into SQLite once on startup. After that, SQLite is the source of truth.
-
 ## Local Development
 
 Install dependencies and run the bot:
