@@ -23,6 +23,32 @@ type Handler struct {
 	sema  camera.Semaphore
 }
 
+type commandHelp struct {
+	Command     string
+	Description string
+	Usage       string
+}
+
+var commandHelpItems = []commandHelp{
+	{Command: "mataelang", Description: "Capture from the default camera"},
+	{Command: "snap", Description: "Capture from a specific camera", Usage: "/snap <name>"},
+	{Command: "cameras", Description: "List configured cameras"},
+	{Command: "addcam", Description: "Add a camera", Usage: "/addcam \"<name>\" <url>"},
+	{Command: "delcam", Description: "Remove a camera", Usage: "/delcam <name>"},
+	{Command: "help", Description: "Show command reference"},
+}
+
+func Commands() []models.BotCommand {
+	commands := make([]models.BotCommand, 0, len(commandHelpItems))
+	for _, item := range commandHelpItems {
+		commands = append(commands, models.BotCommand{
+			Command:     item.Command,
+			Description: item.Description,
+		})
+	}
+	return commands
+}
+
 func New(cfg *config.Config, store *camera.Store) *Handler {
 	return &Handler{
 		cfg:   cfg,
@@ -118,14 +144,19 @@ func parseNameURL(s string) (name, url string, ok bool) {
 }
 
 func (h *Handler) cmdStart(ctx context.Context, b *tgbot.Bot, chatID int64) {
-	msg := "🔍 CCTV Monitor Bot\n\n" +
-		"Commands:\n" +
-		"/mataelang — Capture a frame from the default camera\n" +
-		"/snap <name> — Capture from a specific camera\n" +
-		"/cameras — List configured cameras\n" +
-		"/addcam \"<name>\" <url> — Add a camera\n" +
-		"/delcam <name> — Remove a camera\n" +
-		"/help — Show this reference"
+	var sb strings.Builder
+	sb.WriteString("CCTV Monitor Bot\n\nCommands:\n")
+	for i, item := range commandHelpItems {
+		if i > 0 {
+			sb.WriteByte('\n')
+		}
+		usage := item.Usage
+		if usage == "" {
+			usage = "/" + item.Command
+		}
+		fmt.Fprintf(&sb, "%s - %s", usage, item.Description)
+	}
+	msg := sb.String()
 	b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: msg})
 }
 

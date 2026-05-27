@@ -65,6 +65,10 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	if _, err := b.SetMyCommands(ctx, &tgbot.SetMyCommandsParams{Commands: bot.Commands()}); err != nil {
+		slog.Warn("bot command registration failed", "error", err)
+	}
+
 	slog.Info("bot starting", "cameras_file", store.Path(), "cameras", store.Count())
 	b.Start(ctx)
 	slog.Info("bot stopped")
