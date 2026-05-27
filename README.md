@@ -10,7 +10,7 @@ CCTV Bot is a Telegram bot that captures single JPEG frames from RTSP or RTMP ca
 - Persist camera configuration in a JSON file.
 - Automatically create camera shortcuts when adding cameras when the generated shortcut is valid and available.
 - Automatically register built-in commands and camera shortcuts on startup so users can see them from the chat command menu.
-- Restrict access by Telegram chat ID allowlist.
+- Restrict access through superuser-approved chat authorization requests.
 - Mask camera stream credentials in replies and logs where URLs are displayed.
 - Limit concurrent captures to protect the host and cameras.
 - Run locally or in Docker with FFmpeg included in the image.
@@ -21,6 +21,8 @@ The bot registers these commands with Telegram on startup:
 
 | Command | Description |
 | --- | --- |
+| `/requestaccess [reason]` | Request access for the current chat. |
+| `/authorized` | Superuser dashboard for pending requests and authorized chats. |
 | `/snap <name>` | Capture from a specific camera. |
 | `/cameras` | List configured cameras. |
 | `/addcam "<name>" <url>` | Add a camera. Quote names that contain spaces. |
@@ -38,7 +40,7 @@ Management commands are admin-only in groups and supergroups:
 /delshortcut
 ```
 
-In private chats, these commands are allowed when the private chat ID is listed in `ALLOWED_CHAT_IDS`.
+In private chats, these commands are allowed when the private chat is authorized or the sender is a superuser.
 
 Camera shortcuts are also registered as commands. For example, if camera `Gamping` has shortcut `gamping`, users can run:
 
@@ -72,7 +74,7 @@ Examples:
 - Go 1.26 or newer for local builds.
 - FFmpeg available on `PATH`, unless `FFMPEG_BIN` points to another binary.
 - A Telegram bot token from BotFather.
-- One or more authorized Telegram chat IDs.
+- One or more Telegram superuser IDs.
 
 The Docker image installs FFmpeg automatically.
 
@@ -91,12 +93,14 @@ Required variables:
 | Variable | Description |
 | --- | --- |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token from BotFather. |
-| `ALLOWED_CHAT_IDS` | Comma-separated Telegram chat IDs allowed to use the bot. |
+| `SUPERUSER_IDS` | Comma-separated Telegram user IDs allowed to approve/reject access requests and revoke access. |
 
 Optional variables:
 
 | Variable | Default | Description |
 | --- | --- | --- |
+| `AUTHORIZED_CHAT_IDS` | empty | Optional bootstrap list of pre-authorized chat IDs. Runtime approvals are stored in `AUTH_FILE`. |
+| `AUTH_FILE` | `authorized_chats.json` | Path to the JSON authorization store. |
 | `CAMERAS_FILE` | `cameras.json` | Path to the JSON camera store. Docker sets this to `/data/cameras.json`. |
 | `FFMPEG_BIN` | `ffmpeg` | FFmpeg executable path. |
 | `FFMPEG_TIMEOUT_SEC` | `15` | Capture timeout in seconds. |
@@ -106,12 +110,42 @@ Example:
 
 ```env
 TELEGRAM_BOT_TOKEN=123456:ABC-DEF1234gh
-ALLOWED_CHAT_IDS=123456789,987654321
+SUPERUSER_IDS=123456789
+AUTHORIZED_CHAT_IDS=123456789,-1001234567890
+AUTH_FILE=authorized_chats.json
 CAMERAS_FILE=cameras.json
 FFMPEG_BIN=ffmpeg
 FFMPEG_TIMEOUT_SEC=15
 MAX_CONCURRENT_CAPTURES=3
 ```
+
+## Authorization
+
+The bot no longer uses `ALLOWED_CHAT_IDS`. Access is managed by superusers configured in `SUPERUSER_IDS`.
+
+Unauthorized chats can request access:
+
+```text
+/requestaccess Need CCTV access for this group
+```
+
+For groups and supergroups, only a group owner/admin can request access. Private chats can request access directly.
+
+When a request is created, each superuser receives a private message with inline buttons:
+
+```text
+[Approve] [Reject]
+```
+
+Approving a request authorizes the chat and stores it in `AUTH_FILE`. Rejecting removes the pending request.
+
+Superusers can manage access from their private chat:
+
+```text
+/authorized
+```
+
+The dashboard shows both authorized chats and pending requests. Authorized chats have a manage button that opens a revoke screen. Pending requests have approve/reject buttons.
 
 ## Camera Storage
 
@@ -198,8 +232,8 @@ The `./data` directory on the host is mounted to `/data` in the container so cam
 
 ## Security Notes
 
-- Only chat IDs in `ALLOWED_CHAT_IDS` can use the bot.
-- Unauthorized chats are ignored.
+- Only superusers in `SUPERUSER_IDS` can approve/reject access requests or revoke chat access.
+- Unauthorized chats can only use `/start`, `/help`, and `/requestaccess`.
 - In groups and supergroups, only Telegram admins can add/remove cameras or manage shortcuts.
 - Do not commit `.env`, real bot tokens, or private camera stream URLs.
 - Camera stream credentials are masked in bot replies and logs where URLs are displayed.
@@ -211,9 +245,19 @@ The `./data` directory on the host is mounted to `/data` in the container so cam
 
 Set `TELEGRAM_BOT_TOKEN` in `.env` or in the process environment.
 
-### `ALLOWED_CHAT_IDS is required`
+### `SUPERUSER_IDS must contain at least one user ID`
 
-Set `ALLOWED_CHAT_IDS` to one or more comma-separated Telegram chat IDs.
+Set `SUPERUSER_IDS` to one or more comma-separated Telegram user IDs.
+
+### This chat is not authorized
+
+Ask a group admin to request access:
+
+```text
+/requestaccess Need access for CCTV monitoring
+```
+
+A superuser must approve the request using the inline button sent to their private chat.
 
 ### Commands or camera shortcuts do not appear in Telegram
 
@@ -245,17 +289,15 @@ Install FFmpeg or set `FFMPEG_BIN` to the full binary path.
 
 Check that the RTSP/RTMP URL is reachable from the bot host. If the camera is slow, increase `FFMPEG_TIMEOUT_SEC`.
 
-### Unauthorized chat cannot use the bot
-
-Add the chat ID to `ALLOWED_CHAT_IDS` and restart the bot.
-
 ## Project Structure
 
 ```text
 cctv-bot/
 ├── main.go              # Application startup and Telegram bot initialization
 ├── bot/
-│   └── bot.go           # Command handlers, command registration data, auth middleware
+│   └── bot.go           # Command handlers, command registration data, access checks
+├── auth/
+│   └── store.go         # JSON-backed authorization store
 ├── camera/
 │   ├── capture.go       # FFmpeg frame capture
 │   ├── store.go         # JSON-backed camera store

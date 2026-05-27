@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/faytranevozter/cctv-bot/auth"
 	"github.com/faytranevozter/cctv-bot/bot"
 	"github.com/faytranevozter/cctv-bot/camera"
 	"github.com/faytranevozter/cctv-bot/config"
@@ -51,11 +52,17 @@ func main() {
 		)
 	}
 
-	handler := bot.New(cfg, store)
+	authStore, err := auth.OpenStore(cfg.AuthFile, cfg.AuthorizedChatIDs)
+	if err != nil {
+		slog.Error("auth store open failed", "path", cfg.AuthFile, "error", err)
+		os.Exit(1)
+	}
+
+	handler := bot.New(cfg, store, authStore)
 
 	b, err := tgbot.New(cfg.BotToken,
-		tgbot.WithMiddlewares(bot.AuthMiddleware(cfg.AllowedChatIDs)),
 		tgbot.WithDefaultHandler(handler.DefaultHandler),
+		tgbot.WithCallbackQueryDataHandler("auth:", tgbot.MatchTypePrefix, handler.CallbackHandler),
 	)
 	if err != nil {
 		slog.Error("bot creation failed", "error", err)
@@ -74,7 +81,7 @@ func main() {
 
 	handler.RegisterCommands(ctx, b)
 
-	slog.Info("bot starting", "cameras_file", store.Path(), "cameras", store.Count())
+	slog.Info("bot starting", "cameras_file", store.Path(), "auth_file", authStore.Path(), "cameras", store.Count())
 	b.Start(ctx)
 	slog.Info("bot stopped")
 }

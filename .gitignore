@@ -19,8 +19,9 @@ go.work.sum
 # Environment variables
 .env
 
-# Camera store (created at runtime)
+# Runtime stores
 cameras.json
+authorized_chats.json
 data/
 
 # IDE
