@@ -46,6 +46,15 @@ Camera shortcuts are also registered as commands. For example, if camera `Gampin
 /gamping
 ```
 
+In groups with multiple bots, commands can include this bot's username:
+
+```text
+/cameras@cctipsibot
+/gamping@cctipsibot
+```
+
+Commands targeted at another bot username are ignored.
+
 Examples:
 
 ```text

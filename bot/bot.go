@@ -18,9 +18,10 @@ import (
 )
 
 type Handler struct {
-	cfg   *config.Config
-	store *camera.Store
-	sema  camera.Semaphore
+	cfg         *config.Config
+	store       *camera.Store
+	sema        camera.Semaphore
+	botUsername string
 }
 
 type commandHelp struct {
@@ -73,6 +74,10 @@ func New(cfg *config.Config, store *camera.Store) *Handler {
 	}
 }
 
+func (h *Handler) SetBotUsername(username string) {
+	h.botUsername = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(username), "@"))
+}
+
 func AuthMiddleware(allowed map[int64]bool) tgbot.Middleware {
 	return func(next tgbot.HandlerFunc) tgbot.HandlerFunc {
 		return func(ctx context.Context, b *tgbot.Bot, update *models.Update) {
@@ -104,7 +109,11 @@ func (h *Handler) DefaultHandler(ctx context.Context, b *tgbot.Bot, update *mode
 	userID := update.Message.From.ID
 
 	cmd, rest := splitCommand(text)
-	cmd = strings.ToLower(cmd)
+	var ok bool
+	cmd, ok = h.normalizeCommand(cmd)
+	if !ok {
+		return
+	}
 
 	switch cmd {
 	case "/start":
@@ -141,6 +150,18 @@ func (h *Handler) DefaultHandler(ctx context.Context, b *tgbot.Bot, update *mode
 			h.captureAndSend(ctx, b, chatID, user, cam)
 		}
 	}
+}
+
+func (h *Handler) normalizeCommand(cmd string) (string, bool) {
+	cmd = strings.ToLower(strings.TrimSpace(cmd))
+	name, target, hasTarget := strings.Cut(cmd, "@")
+	if !hasTarget {
+		return name, true
+	}
+	if h.botUsername == "" || target != h.botUsername {
+		return "", false
+	}
+	return name, true
 }
 
 func (h *Handler) requireAdmin(ctx context.Context, b *tgbot.Bot, chatID int64, chatType models.ChatType, userID int64, username, cmd string) bool {

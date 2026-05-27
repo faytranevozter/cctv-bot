@@ -65,6 +65,13 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	me, err := b.GetMe(ctx)
+	if err != nil {
+		slog.Warn("bot username lookup failed", "error", err)
+	} else {
+		handler.SetBotUsername(me.Username)
+	}
+
 	handler.RegisterCommands(ctx, b)
 
 	slog.Info("bot starting", "cameras_file", store.Path(), "cameras", store.Count())
