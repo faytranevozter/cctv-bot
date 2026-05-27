@@ -6,25 +6,24 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/faytranevozter/cctv-bot/camera"
 )
 
-type Camera struct {
-	Name string
-	URL  string
-}
-
 type Config struct {
-	BotToken            string
-	AllowedChatIDs      map[int64]bool
-	Cameras             []Camera
-	FFmpegBin           string
-	FFmpegTimeoutSec    int
+	BotToken              string
+	AllowedChatIDs        map[int64]bool
+	CamerasFile           string
+	LegacyCameras         []camera.Camera // parsed from CAMERA_N_NAME/_URL env vars, used only for one-shot migration
+	FFmpegBin             string
+	FFmpegTimeoutSec      int
 	MaxConcurrentCaptures int
 }
 
 func Load() (*Config, error) {
 	cfg := &Config{
 		AllowedChatIDs:        make(map[int64]bool),
+		CamerasFile:           envOr("CAMERAS_FILE", "cameras.json"),
 		FFmpegBin:             envOr("FFMPEG_BIN", "ffmpeg"),
 		FFmpegTimeoutSec:      envOrInt("FFMPEG_TIMEOUT_SEC", 15),
 		MaxConcurrentCaptures: envOrInt("MAX_CONCURRENT_CAPTURES", 3),
@@ -54,51 +53,41 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("ALLOWED_CHAT_IDS must contain at least one chat ID")
 	}
 
-	cfg.Cameras = parseCameras()
-	if len(cfg.Cameras) == 0 {
-		return nil, fmt.Errorf("at least one CAMERA_1_NAME/CAMERA_1_URL pair is required")
-	}
+	cfg.LegacyCameras = parseLegacyCameras()
 
 	return cfg, nil
 }
 
-func (c *Config) DefaultCamera() Camera {
-	return c.Cameras[0]
-}
-
-func (c *Config) FindCamera(name string) (Camera, bool) {
-	for _, cam := range c.Cameras {
-		if strings.EqualFold(cam.Name, name) {
-			return cam, true
-		}
-	}
-	return Camera{}, false
-}
-
-func parseCameras() []Camera {
-	var cameras []Camera
-	type kv struct{ k, v string }
+// parseLegacyCameras reads CAMERA_N_NAME / CAMERA_N_URL pairs from the
+// environment. These are no longer the authoritative source; they are kept
+// only to migrate existing deployments into the JSON store on first run.
+func parseLegacyCameras() []camera.Camera {
+	type kv struct{ name, url string }
 	pairs := make(map[int]kv)
 
 	for _, e := range os.Environ() {
 		parts := strings.SplitN(e, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
 		key, val := parts[0], parts[1]
 
-		if strings.HasPrefix(key, "CAMERA_") && strings.HasSuffix(key, "_NAME") {
-			nStr := strings.TrimPrefix(key, "CAMERA_")
-			nStr = strings.TrimSuffix(nStr, "_NAME")
+		if !strings.HasPrefix(key, "CAMERA_") {
+			continue
+		}
+		switch {
+		case strings.HasSuffix(key, "_NAME"):
+			nStr := strings.TrimSuffix(strings.TrimPrefix(key, "CAMERA_"), "_NAME")
 			if n, err := strconv.Atoi(nStr); err == nil {
 				p := pairs[n]
-				p.k = val
+				p.name = val
 				pairs[n] = p
 			}
-		}
-		if strings.HasPrefix(key, "CAMERA_") && strings.HasSuffix(key, "_URL") {
-			nStr := strings.TrimPrefix(key, "CAMERA_")
-			nStr = strings.TrimSuffix(nStr, "_URL")
+		case strings.HasSuffix(key, "_URL"):
+			nStr := strings.TrimSuffix(strings.TrimPrefix(key, "CAMERA_"), "_URL")
 			if n, err := strconv.Atoi(nStr); err == nil {
 				p := pairs[n]
-				p.v = val
+				p.url = val
 				pairs[n] = p
 			}
 		}
@@ -110,14 +99,14 @@ func parseCameras() []Camera {
 	}
 	sort.Ints(indices)
 
+	cams := make([]camera.Camera, 0, len(indices))
 	for _, n := range indices {
 		p := pairs[n]
-		if p.k != "" && p.v != "" {
-			cameras = append(cameras, Camera{Name: p.k, URL: p.v})
+		if p.name != "" && p.url != "" {
+			cams = append(cams, camera.Camera{Name: p.name, URL: p.url})
 		}
 	}
-
-	return cameras
+	return cams
 }
 
 func envOr(key, def string) string {

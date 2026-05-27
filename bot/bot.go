@@ -3,6 +3,7 @@ package bot
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -17,14 +18,16 @@ import (
 )
 
 type Handler struct {
-	cfg  *config.Config
-	sema camera.Semaphore
+	cfg   *config.Config
+	store *camera.Store
+	sema  camera.Semaphore
 }
 
-func New(cfg *config.Config) *Handler {
+func New(cfg *config.Config, store *camera.Store) *Handler {
 	return &Handler{
-		cfg:  cfg,
-		sema: camera.NewSemaphore(cfg.MaxConcurrentCaptures),
+		cfg:   cfg,
+		store: store,
+		sema:  camera.NewSemaphore(cfg.MaxConcurrentCaptures),
 	}
 }
 
@@ -53,16 +56,12 @@ func (h *Handler) DefaultHandler(ctx context.Context, b *tgbot.Bot, update *mode
 	}
 
 	chatID := update.Message.Chat.ID
-	text := update.Message.Text
+	text := strings.TrimSpace(update.Message.Text)
 	user := update.Message.From.Username
 
-	parts := strings.Fields(text)
-	if len(parts) == 0 {
-		return
-	}
-	cmd := strings.ToLower(parts[0])
+	cmd, rest := splitCommand(text)
 
-	switch cmd {
+	switch strings.ToLower(cmd) {
 	case "/start":
 		h.cmdStart(ctx, b, chatID)
 	case "/help":
@@ -72,12 +71,50 @@ func (h *Handler) DefaultHandler(ctx context.Context, b *tgbot.Bot, update *mode
 	case "/mataelang":
 		h.cmdMataelang(ctx, b, chatID, user)
 	case "/snap":
-		arg := ""
-		if len(parts) > 1 {
-			arg = parts[1]
-		}
-		h.cmdSnap(ctx, b, chatID, user, arg)
+		h.cmdSnap(ctx, b, chatID, user, rest)
+	case "/addcam":
+		h.cmdAddCam(ctx, b, chatID, user, rest)
+	case "/delcam":
+		h.cmdDelCam(ctx, b, chatID, user, rest)
 	}
+}
+
+// splitCommand returns the command word and the remaining argument string.
+func splitCommand(text string) (cmd, rest string) {
+	if i := strings.IndexAny(text, " \t"); i >= 0 {
+		return text[:i], strings.TrimSpace(text[i+1:])
+	}
+	return text, ""
+}
+
+// parseNameURL splits an /addcam argument into (name, url). The name may be
+// wrapped in single or double quotes to allow spaces; otherwise the first
+// whitespace separates name from url.
+func parseNameURL(s string) (name, url string, ok bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", "", false
+	}
+	if s[0] == '"' || s[0] == '\'' {
+		quote := s[0]
+		end := strings.IndexByte(s[1:], quote)
+		if end < 0 {
+			return "", "", false
+		}
+		name = s[1 : 1+end]
+		url = strings.TrimSpace(s[1+end+1:])
+	} else {
+		i := strings.IndexAny(s, " \t")
+		if i < 0 {
+			return "", "", false
+		}
+		name = s[:i]
+		url = strings.TrimSpace(s[i+1:])
+	}
+	if name == "" || url == "" {
+		return "", "", false
+	}
+	return name, url, true
 }
 
 func (h *Handler) cmdStart(ctx context.Context, b *tgbot.Bot, chatID int64) {
@@ -86,6 +123,8 @@ func (h *Handler) cmdStart(ctx context.Context, b *tgbot.Bot, chatID int64) {
 		"/mataelang — Capture a frame from the default camera\n" +
 		"/snap <name> — Capture from a specific camera\n" +
 		"/cameras — List configured cameras\n" +
+		"/addcam \"<name>\" <url> — Add a camera\n" +
+		"/delcam <name> — Remove a camera\n" +
 		"/help — Show this reference"
 	b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: msg})
 }
@@ -95,29 +134,42 @@ func (h *Handler) cmdHelp(ctx context.Context, b *tgbot.Bot, chatID int64) {
 }
 
 func (h *Handler) cmdCameras(ctx context.Context, b *tgbot.Bot, chatID int64) {
-	if len(h.cfg.Cameras) == 0 {
-		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: "No cameras configured."})
+	cams := h.store.List()
+	if len(cams) == 0 {
+		b.SendMessage(ctx, &tgbot.SendMessageParams{
+			ChatID: chatID,
+			Text:   "No cameras configured. Add one with:\n/addcam \"<name>\" <url>",
+		})
 		return
 	}
 
 	var sb strings.Builder
 	sb.WriteString("Cameras:\n")
-	for i, cam := range h.cfg.Cameras {
+	for i, cam := range cams {
 		masked := camera.MaskCredentials(cam.URL)
-		sb.WriteString(fmt.Sprintf("\n• %s", cam.Name))
+		fmt.Fprintf(&sb, "\n• %s", cam.Name)
 		if i == 0 {
 			sb.WriteString(" (default)")
 		}
-		sb.WriteString(fmt.Sprintf("\n  %s\n", masked))
+		fmt.Fprintf(&sb, "\n  %s\n", masked)
 	}
 	b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: sb.String()})
 }
 
 func (h *Handler) cmdMataelang(ctx context.Context, b *tgbot.Bot, chatID int64, user string) {
-	h.captureAndSend(ctx, b, chatID, user, h.cfg.DefaultCamera())
+	cam, ok := h.store.Default()
+	if !ok {
+		b.SendMessage(ctx, &tgbot.SendMessageParams{
+			ChatID: chatID,
+			Text:   "No cameras configured. Add one with /addcam.",
+		})
+		return
+	}
+	h.captureAndSend(ctx, b, chatID, user, cam)
 }
 
-func (h *Handler) cmdSnap(ctx context.Context, b *tgbot.Bot, chatID int64, user, name string) {
+func (h *Handler) cmdSnap(ctx context.Context, b *tgbot.Bot, chatID int64, user, arg string) {
+	name := strings.Trim(arg, " \t\"'")
 	if name == "" {
 		b.SendMessage(ctx, &tgbot.SendMessageParams{
 			ChatID: chatID,
@@ -125,7 +177,7 @@ func (h *Handler) cmdSnap(ctx context.Context, b *tgbot.Bot, chatID int64, user,
 		})
 		return
 	}
-	cam, ok := h.cfg.FindCamera(name)
+	cam, ok := h.store.Find(name)
 	if !ok {
 		b.SendMessage(ctx, &tgbot.SendMessageParams{
 			ChatID: chatID,
@@ -136,7 +188,80 @@ func (h *Handler) cmdSnap(ctx context.Context, b *tgbot.Bot, chatID int64, user,
 	h.captureAndSend(ctx, b, chatID, user, cam)
 }
 
-func (h *Handler) captureAndSend(ctx context.Context, b *tgbot.Bot, chatID int64, user string, cam config.Camera) {
+func (h *Handler) cmdAddCam(ctx context.Context, b *tgbot.Bot, chatID int64, user, arg string) {
+	name, url, ok := parseNameURL(arg)
+	if !ok {
+		b.SendMessage(ctx, &tgbot.SendMessageParams{
+			ChatID: chatID,
+			Text:   "Usage: /addcam \"<name>\" <url>\nExample: /addcam \"Kantor Kiri\" rtsp://user:pass@host/stream",
+		})
+		return
+	}
+
+	err := h.store.Add(camera.Camera{Name: name, URL: url})
+	switch {
+	case errors.Is(err, camera.ErrAlreadyExists):
+		b.SendMessage(ctx, &tgbot.SendMessageParams{
+			ChatID: chatID,
+			Text:   fmt.Sprintf("Camera %q already exists. Remove it first with /delcam.", name),
+		})
+		return
+	case errors.Is(err, camera.ErrInvalid):
+		b.SendMessage(ctx, &tgbot.SendMessageParams{
+			ChatID: chatID,
+			Text:   "Camera name and URL are required.",
+		})
+		return
+	case err != nil:
+		slog.Error("addcam failed", "command", "addcam", "chat_id", chatID, "username", user, "camera", name, "error", err.Error())
+		b.SendMessage(ctx, &tgbot.SendMessageParams{
+			ChatID: chatID,
+			Text:   fmt.Sprintf("Failed to add camera: %s", err.Error()),
+		})
+		return
+	}
+
+	slog.Info("command completed", "command", "addcam", "chat_id", chatID, "username", user, "camera", name)
+	b.SendMessage(ctx, &tgbot.SendMessageParams{
+		ChatID: chatID,
+		Text:   fmt.Sprintf("Added camera %q.", name),
+	})
+}
+
+func (h *Handler) cmdDelCam(ctx context.Context, b *tgbot.Bot, chatID int64, user, arg string) {
+	name := strings.Trim(arg, " \t\"'")
+	if name == "" {
+		b.SendMessage(ctx, &tgbot.SendMessageParams{
+			ChatID: chatID,
+			Text:   "Usage: /delcam <name>",
+		})
+		return
+	}
+	err := h.store.Remove(name)
+	switch {
+	case errors.Is(err, camera.ErrNotFound):
+		b.SendMessage(ctx, &tgbot.SendMessageParams{
+			ChatID: chatID,
+			Text:   fmt.Sprintf("Unknown camera: %s. Use /cameras to list.", name),
+		})
+		return
+	case err != nil:
+		slog.Error("delcam failed", "command", "delcam", "chat_id", chatID, "username", user, "camera", name, "error", err.Error())
+		b.SendMessage(ctx, &tgbot.SendMessageParams{
+			ChatID: chatID,
+			Text:   fmt.Sprintf("Failed to remove camera: %s", err.Error()),
+		})
+		return
+	}
+
+	slog.Info("command completed", "command", "delcam", "chat_id", chatID, "username", user, "camera", name)
+	b.SendMessage(ctx, &tgbot.SendMessageParams{
+		ChatID: chatID,
+		Text:   fmt.Sprintf("Removed camera %q.", name),
+	})
+}
+
+func (h *Handler) captureAndSend(ctx context.Context, b *tgbot.Bot, chatID int64, user string, cam camera.Camera) {
 	start := time.Now()
 
 	b.SendMessage(ctx, &tgbot.SendMessageParams{
@@ -216,7 +341,7 @@ func (h *Handler) captureAndSend(ctx context.Context, b *tgbot.Bot, chatID int64
 		)
 		b.SendMessage(ctx, &tgbot.SendMessageParams{
 			ChatID: chatID,
-			Text:   fmt.Sprintf("Terekam"),
+			Text:   "Terekam",
 		})
 	}
 }

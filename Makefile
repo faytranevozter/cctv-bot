@@ -42,5 +42,6 @@ env: ## Copy .env.example to .env if missing
 docker-build: ## Build docker image
 	docker build -t $(DOCKER_IMG) .
 
-docker-run: ## Run docker image with .env
-	docker run --rm --env-file .env --name $(BINARY) $(DOCKER_IMG)
+docker-run: ## Run docker image with .env (mounts ./data for cameras.json)
+	mkdir -p data
+	docker run --rm --env-file .env -v $(PWD)/data:/data --name $(BINARY) $(DOCKER_IMG)

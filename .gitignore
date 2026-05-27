@@ -19,6 +19,10 @@ go.work.sum
 # Environment variables
 .env
 
+# Camera store (created at runtime)
+cameras.json
+data/
+
 # IDE
 .idea/
 .vscode/
