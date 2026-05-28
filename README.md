@@ -1,6 +1,6 @@
 # CCTV Bot
 
-CCTV Bot is a Telegram bot that captures single JPEG frames from RTSP or RTMP camera streams with FFmpeg and sends them back to authorized Telegram chats.
+CCTV Bot is a Telegram bot that captures single JPEG frames from FFmpeg-supported camera streams, including RTSP, RTMP, and HLS `.m3u8`, then sends them back to authorized Telegram chats.
 
 ## Features
 
@@ -263,7 +263,7 @@ Install FFmpeg or set `FFMPEG_BIN` to the full binary path.
 
 ### Capture times out
 
-Check that the RTSP/RTMP URL is reachable from the bot host. If the camera is slow, increase `FFMPEG_TIMEOUT_SEC`.
+Check that the stream URL is reachable from the bot host. If the camera or playlist is slow, increase `FFMPEG_TIMEOUT_SEC`.
 
 ## Project Structure
 

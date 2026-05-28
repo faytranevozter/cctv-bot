@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -23,7 +24,7 @@ func (s Semaphore) Release() {
 	<-s
 }
 
-// Capture grabs a single JPEG frame from an RTMP/RTSP stream using FFmpeg.
+// Capture grabs a single JPEG frame from an FFmpeg-supported stream.
 // Returns the path to the temp file containing the frame.
 func Capture(ctx context.Context, streamURL, ffmpegBin string, timeoutSec int) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
@@ -35,14 +36,18 @@ func Capture(ctx context.Context, streamURL, ffmpegBin string, timeoutSec int) (
 	}
 	f.Close()
 
-	cmd := exec.CommandContext(ctx, ffmpegBin,
-		"-rtsp_transport", "tcp",
+	args := []string{}
+	if strings.HasPrefix(strings.ToLower(streamURL), "rtsp://") {
+		args = append(args, "-rtsp_transport", "tcp")
+	}
+	args = append(args,
 		"-i", streamURL,
 		"-frames:v", "1",
 		"-q:v", "2",
 		f.Name(),
 		"-y",
 	)
+	cmd := exec.CommandContext(ctx, ffmpegBin, args...)
 
 	stderr, err := cmd.CombinedOutput()
 	if err != nil {
