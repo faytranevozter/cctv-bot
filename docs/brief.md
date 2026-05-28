@@ -47,8 +47,7 @@ cctv-bot/
 - `/help` — Same as `/start`.
 - `/cameras` — List configured cameras with credentials masked.
 - `/snap <camera_name>` — Capture from a named camera.
-- `/addcam "<name>" <url>` — Add a camera. Quote the name when it contains spaces.
-- `/delcam <name>` — Remove a camera by name.
+- `/cameramanage` — Superuser-only button dashboard for adding, removing, and managing camera shortcuts.
 
 ### 4. Camera storage (no database server)
 - Cameras are persisted in a JSON file at `${CAMERAS_FILE}` (default `./cameras.json`, `/data/cameras.json` in Docker).
@@ -56,7 +55,7 @@ cctv-bot/
 - The first entry is the default camera used by `/mataelang`.
 - The store is concurrency-safe (`sync.RWMutex`) and writes are atomic (temp file + `os.Rename`).
 - The file is created lazily on the first write; a missing or empty file is treated as an empty list.
-- Lookups (`/snap`, `/delcam`) match camera names case-insensitively.
+- Lookups (`/snap`) match camera names case-insensitively.
 
 ### 5. Security
 - Allowlist of authorized Telegram chat IDs from env: `ALLOWED_CHAT_IDS=123456,789012`.
@@ -95,7 +94,7 @@ cctv-bot/
 cp .env.example .env       # fill in TELEGRAM_BOT_TOKEN and ALLOWED_CHAT_IDS
 make run
 ```
-Add cameras from Telegram with `/addcam`, or hand-edit `cameras.json`.
+Add cameras from Telegram with `/cameramanage`.
 
 ### Docker
 ```sh

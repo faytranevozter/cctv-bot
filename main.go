@@ -37,7 +37,7 @@ func main() {
 	store := camera.NewStore(db)
 
 	if store.Count() == 0 {
-		slog.Warn("no cameras configured; use /addcam in Telegram",
+		slog.Warn("no cameras configured; use /cameramanage in superuser private chat",
 			"path", cfg.DBFile,
 		)
 	}
@@ -53,6 +53,7 @@ func main() {
 	b, err := tgbot.New(cfg.BotToken,
 		tgbot.WithDefaultHandler(handler.DefaultHandler),
 		tgbot.WithCallbackQueryDataHandler("auth:", tgbot.MatchTypePrefix, handler.CallbackHandler),
+		tgbot.WithCallbackQueryDataHandler("cam:", tgbot.MatchTypePrefix, handler.CallbackHandler),
 	)
 	if err != nil {
 		slog.Error("bot creation failed", "error", err)

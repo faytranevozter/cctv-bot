@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/faytranevozter/cctv-bot/auth"
@@ -25,6 +26,13 @@ type Handler struct {
 	authStore   *auth.Store
 	sema        camera.Semaphore
 	botUsername string
+	pendingMu   sync.Mutex
+	pending     map[int64]pendingCameraAction
+}
+
+type pendingCameraAction struct {
+	Kind     string
+	CameraID int64
 }
 
 type commandHelp struct {
@@ -36,12 +44,9 @@ type commandHelp struct {
 var commandHelpItems = []commandHelp{
 	{Command: "requestaccess", Description: "Request access to this bot", Usage: "/requestaccess [reason]"},
 	{Command: "authorized", Description: "Manage authorized chats"},
+	{Command: "cameramanage", Description: "Manage cameras"},
 	{Command: "snap", Description: "Capture from a specific camera", Usage: "/snap <name>"},
 	{Command: "cameras", Description: "List configured cameras"},
-	{Command: "addcam", Description: "Add a camera", Usage: "/addcam \"<name>\" <url>"},
-	{Command: "delcam", Description: "Remove a camera", Usage: "/delcam <name>"},
-	{Command: "setshortcut", Description: "Assign a camera shortcut", Usage: "/setshortcut \"<name>\" <shortcut>"},
-	{Command: "delshortcut", Description: "Remove a camera shortcut", Usage: "/delshortcut <name>"},
 	{Command: "help", Description: "Show command reference"},
 }
 
@@ -77,6 +82,7 @@ func New(cfg *config.Config, store *camera.Store, authStore *auth.Store) *Handle
 		store:     store,
 		authStore: authStore,
 		sema:      camera.NewSemaphore(cfg.MaxConcurrentCaptures),
+		pending:   make(map[int64]pendingCameraAction),
 	}
 }
 
@@ -94,6 +100,9 @@ func (h *Handler) DefaultHandler(ctx context.Context, b *tgbot.Bot, update *mode
 	text := strings.TrimSpace(update.Message.Text)
 	user := update.Message.From.Username
 	userID := update.Message.From.ID
+	if h.handlePendingCameraInput(ctx, b, update) {
+		return
+	}
 
 	cmd, rest := splitCommand(text)
 	var ok bool
@@ -114,6 +123,11 @@ func (h *Handler) DefaultHandler(ctx context.Context, b *tgbot.Bot, update *mode
 			return
 		}
 		h.cmdAuthorized(ctx, b, chatID, 0)
+	case "/cameramanage":
+		if !h.requireSuperuserPrivate(ctx, b, chatID, chatType, userID, user) {
+			return
+		}
+		h.cmdCameraManage(ctx, b, chatID, 0)
 	case "/cameras":
 		if !h.requireAuthorized(ctx, b, chatID, chatType, userID, user, cmd) {
 			return
@@ -125,25 +139,13 @@ func (h *Handler) DefaultHandler(ctx context.Context, b *tgbot.Bot, update *mode
 		}
 		h.cmdSnap(ctx, b, chatID, user, rest)
 	case "/addcam":
-		if !h.requireSuperuser(ctx, b, chatID, userID, user) {
-			return
-		}
-		h.cmdAddCam(ctx, b, chatID, user, rest)
+		h.redirectCameraManage(ctx, b, chatID, userID, user)
 	case "/delcam":
-		if !h.requireSuperuser(ctx, b, chatID, userID, user) {
-			return
-		}
-		h.cmdDelCam(ctx, b, chatID, user, rest)
+		h.redirectCameraManage(ctx, b, chatID, userID, user)
 	case "/setshortcut":
-		if !h.requireSuperuser(ctx, b, chatID, userID, user) {
-			return
-		}
-		h.cmdSetShortcut(ctx, b, chatID, rest)
+		h.redirectCameraManage(ctx, b, chatID, userID, user)
 	case "/delshortcut":
-		if !h.requireSuperuser(ctx, b, chatID, userID, user) {
-			return
-		}
-		h.cmdDelShortcut(ctx, b, chatID, rest)
+		h.redirectCameraManage(ctx, b, chatID, userID, user)
 	default:
 		if !h.requireAuthorized(ctx, b, chatID, chatType, userID, user, cmd) {
 			return
@@ -160,7 +162,7 @@ func (h *Handler) CallbackHandler(ctx context.Context, b *tgbot.Bot, update *mod
 		return
 	}
 	q := update.CallbackQuery
-	if !strings.HasPrefix(q.Data, "auth:") {
+	if !strings.HasPrefix(q.Data, "auth:") && !strings.HasPrefix(q.Data, "cam:") {
 		return
 	}
 
@@ -172,6 +174,10 @@ func (h *Handler) CallbackHandler(ctx context.Context, b *tgbot.Bot, update *mod
 
 	parts := strings.Split(q.Data, ":")
 	if len(parts) < 2 {
+		return
+	}
+	if parts[0] == "cam" {
+		h.handleCameraCallback(ctx, b, q, parts)
 		return
 	}
 	action := parts[1]
@@ -236,6 +242,24 @@ func (h *Handler) requireSuperuser(ctx context.Context, b *tgbot.Bot, chatID, us
 	return false
 }
 
+func (h *Handler) requireSuperuserPrivate(ctx context.Context, b *tgbot.Bot, chatID int64, chatType models.ChatType, userID int64, username string) bool {
+	if !h.requireSuperuser(ctx, b, chatID, userID, username) {
+		return false
+	}
+	if chatType == models.ChatTypePrivate {
+		return true
+	}
+	b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: "Camera management is only available in superuser private chat."})
+	return false
+}
+
+func (h *Handler) redirectCameraManage(ctx context.Context, b *tgbot.Bot, chatID, userID int64, username string) {
+	if !h.requireSuperuser(ctx, b, chatID, userID, username) {
+		return
+	}
+	b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: "Use /cameramanage to manage cameras with buttons."})
+}
+
 func (h *Handler) requireAuthorized(ctx context.Context, b *tgbot.Bot, chatID int64, chatType models.ChatType, userID int64, username, cmd string) bool {
 	if h.authStore.IsAuthorized(chatID) || (chatType == models.ChatTypePrivate && h.isSuperuser(userID)) {
 		return true
@@ -267,7 +291,7 @@ func splitCommand(text string) (cmd, rest string) {
 	return text, ""
 }
 
-// parseNameURL splits an /addcam argument into (name, url). The name may be
+// parseNameURL splits camera details into (name, url). The name may be
 // wrapped in single or double quotes to allow spaces; otherwise the first
 // whitespace separates name from url.
 func parseNameURL(s string) (name, url string, ok bool) {
@@ -295,11 +319,6 @@ func parseNameURL(s string) (name, url string, ok bool) {
 		return "", "", false
 	}
 	return name, url, true
-}
-
-func parseNameValue(s string) (name, value string, ok bool) {
-	name, value, ok = parseNameURL(s)
-	return name, value, ok
 }
 
 func normalizeShortcut(s string) string {
@@ -340,7 +359,12 @@ func reservedCommand(shortcut string) bool {
 			return true
 		}
 	}
-	return shortcut == "start"
+	switch shortcut {
+	case "start", "addcam", "delcam", "setshortcut", "delshortcut":
+		return true
+	default:
+		return false
+	}
 }
 
 func (h *Handler) autoShortcut(name string) (string, string) {
@@ -639,12 +663,260 @@ func displayUser(user models.User) string {
 	return fmt.Sprintf("%d", user.ID)
 }
 
+func (h *Handler) cmdCameraManage(ctx context.Context, b *tgbot.Bot, chatID int64, messageID int) {
+	cams := h.store.List()
+	text := cameraListText(cams)
+	markup := cameraListKeyboard(cams)
+	if messageID > 0 {
+		b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: text, ReplyMarkup: markup})
+		return
+	}
+	b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: text, ReplyMarkup: markup})
+}
+
+func cameraListText(cams []camera.Camera) string {
+	var sb strings.Builder
+	sb.WriteString("Camera Management\n\n")
+	if len(cams) == 0 {
+		sb.WriteString("No cameras configured.")
+		return sb.String()
+	}
+	sb.WriteString("Cameras:\n")
+	for i, cam := range cams {
+		fmt.Fprintf(&sb, "%d. %s", i+1, cam.Name)
+		if cam.Shortcut != "" {
+			fmt.Fprintf(&sb, " (/%s)", cam.Shortcut)
+		}
+		sb.WriteByte('\n')
+	}
+	return strings.TrimSpace(sb.String())
+}
+
+func cameraListKeyboard(cams []camera.Camera) *models.InlineKeyboardMarkup {
+	rows := [][]models.InlineKeyboardButton{{{Text: "Add Camera", CallbackData: "cam:add"}}}
+	for _, cam := range cams {
+		rows = append(rows, []models.InlineKeyboardButton{{Text: "Manage: " + buttonLabel(cam.Name), CallbackData: fmt.Sprintf("cam:m:%d", cam.ID)}})
+	}
+	rows = append(rows, []models.InlineKeyboardButton{{Text: "Refresh", CallbackData: "cam:l"}})
+	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+func (h *Handler) renderCameraDetail(ctx context.Context, b *tgbot.Bot, chatID int64, messageID int, cameraID int64) {
+	cam, ok := h.store.FindByID(cameraID)
+	if !ok {
+		b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: "Camera not found.", ReplyMarkup: cameraBackKeyboard()})
+		return
+	}
+	shortcut := "none"
+	if cam.Shortcut != "" {
+		shortcut = "/" + cam.Shortcut
+	}
+	text := fmt.Sprintf("Camera\n\nName: %s\nShortcut: %s\nURL: %s", cam.Name, shortcut, camera.MaskCredentials(cam.URL))
+	b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: text, ReplyMarkup: cameraDetailKeyboard(cam)})
+}
+
+func cameraDetailKeyboard(cam camera.Camera) *models.InlineKeyboardMarkup {
+	rows := [][]models.InlineKeyboardButton{
+		{{Text: "Capture", CallbackData: fmt.Sprintf("cam:c:%d", cam.ID)}},
+		{{Text: "Set Shortcut", CallbackData: fmt.Sprintf("cam:ss:%d", cam.ID)}},
+	}
+	if cam.Shortcut != "" {
+		rows = append(rows, []models.InlineKeyboardButton{{Text: "Remove Shortcut", CallbackData: fmt.Sprintf("cam:rs:%d", cam.ID)}})
+	}
+	rows = append(rows,
+		[]models.InlineKeyboardButton{{Text: "Delete Camera", CallbackData: fmt.Sprintf("cam:dc:%d", cam.ID)}},
+		[]models.InlineKeyboardButton{{Text: "Back", CallbackData: "cam:l"}},
+	)
+	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+func cameraBackKeyboard() *models.InlineKeyboardMarkup {
+	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: "Back", CallbackData: "cam:l"}}}}
+}
+
+func (h *Handler) handleCameraCallback(ctx context.Context, b *tgbot.Bot, q *models.CallbackQuery, parts []string) {
+	chatID, messageID, ok := callbackMessage(q)
+	if !ok {
+		return
+	}
+	if q.Message.Message.Chat.Type != models.ChatTypePrivate {
+		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: "Camera management is only available in superuser private chat."})
+		return
+	}
+	action := parts[1]
+	switch action {
+	case "l":
+		h.clearPending(q.From.ID)
+		h.cmdCameraManage(ctx, b, chatID, messageID)
+	case "add":
+		h.setPending(q.From.ID, pendingCameraAction{Kind: "add"})
+		b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: "Send camera details:\n\n\"<name>\" <url>\n\nExample:\n\"Front Gate\" rtsp://user:pass@host/stream", ReplyMarkup: cameraBackKeyboard()})
+	case "m", "c", "ss", "rs", "dc", "dd":
+		if len(parts) != 3 {
+			return
+		}
+		cameraID, err := strconv.ParseInt(parts[2], 10, 64)
+		if err != nil {
+			return
+		}
+		h.handleCameraAction(ctx, b, chatID, messageID, q.From.Username, q.From.ID, action, cameraID)
+	}
+}
+
+func (h *Handler) handleCameraAction(ctx context.Context, b *tgbot.Bot, chatID int64, messageID int, username string, userID int64, action string, cameraID int64) {
+	switch action {
+	case "m":
+		h.renderCameraDetail(ctx, b, chatID, messageID, cameraID)
+	case "c":
+		cam, ok := h.store.FindByID(cameraID)
+		if !ok {
+			b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: "Camera not found."})
+			return
+		}
+		h.captureAndSend(ctx, b, chatID, username, cam)
+	case "ss":
+		cam, ok := h.store.FindByID(cameraID)
+		if !ok {
+			b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: "Camera not found.", ReplyMarkup: cameraBackKeyboard()})
+			return
+		}
+		h.setPending(userID, pendingCameraAction{Kind: "shortcut", CameraID: cameraID})
+		b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: fmt.Sprintf("Send shortcut for %q:\n\nfront_gate", cam.Name), ReplyMarkup: cameraBackKeyboard()})
+	case "rs":
+		if err := h.store.DeleteShortcutByID(cameraID); err != nil {
+			b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: fmt.Sprintf("Failed to remove shortcut: %s", err.Error())})
+			return
+		}
+		h.RegisterCommands(ctx, b)
+		h.renderCameraDetail(ctx, b, chatID, messageID, cameraID)
+	case "dc":
+		cam, ok := h.store.FindByID(cameraID)
+		if !ok {
+			b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: "Camera not found.", ReplyMarkup: cameraBackKeyboard()})
+			return
+		}
+		b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: fmt.Sprintf("Delete camera %q?", cam.Name), ReplyMarkup: deleteCameraKeyboard(cameraID)})
+	case "dd":
+		if err := h.store.RemoveByID(cameraID); err != nil {
+			b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: fmt.Sprintf("Failed to delete camera: %s", err.Error())})
+			return
+		}
+		h.RegisterCommands(ctx, b)
+		h.cmdCameraManage(ctx, b, chatID, messageID)
+	}
+}
+
+func deleteCameraKeyboard(cameraID int64) *models.InlineKeyboardMarkup {
+	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
+		{{Text: "Confirm Delete", CallbackData: fmt.Sprintf("cam:dd:%d", cameraID)}},
+		{{Text: "Cancel", CallbackData: fmt.Sprintf("cam:m:%d", cameraID)}},
+	}}
+}
+
+func (h *Handler) setPending(userID int64, action pendingCameraAction) {
+	h.pendingMu.Lock()
+	defer h.pendingMu.Unlock()
+	h.pending[userID] = action
+}
+
+func (h *Handler) clearPending(userID int64) {
+	h.pendingMu.Lock()
+	defer h.pendingMu.Unlock()
+	delete(h.pending, userID)
+}
+
+func (h *Handler) popPending(userID int64) (pendingCameraAction, bool) {
+	h.pendingMu.Lock()
+	defer h.pendingMu.Unlock()
+	action, ok := h.pending[userID]
+	if ok {
+		delete(h.pending, userID)
+	}
+	return action, ok
+}
+
+func (h *Handler) handlePendingCameraInput(ctx context.Context, b *tgbot.Bot, update *models.Update) bool {
+	msg := update.Message
+	if msg.Chat.Type != models.ChatTypePrivate || !h.isSuperuser(msg.From.ID) {
+		return false
+	}
+	action, ok := h.popPending(msg.From.ID)
+	if !ok {
+		return false
+	}
+	text := strings.TrimSpace(msg.Text)
+	if strings.EqualFold(text, "cancel") {
+		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: msg.Chat.ID, Text: "Cancelled."})
+		h.cmdCameraManage(ctx, b, msg.Chat.ID, 0)
+		return true
+	}
+	switch action.Kind {
+	case "add":
+		h.handleAddCameraInput(ctx, b, msg.Chat.ID, msg.From.Username, text)
+	case "shortcut":
+		h.handleSetShortcutInput(ctx, b, msg.Chat.ID, action.CameraID, text)
+	}
+	return true
+}
+
+func (h *Handler) handleAddCameraInput(ctx context.Context, b *tgbot.Bot, chatID int64, username, input string) {
+	name, url, ok := parseNameURL(input)
+	if !ok {
+		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: "Invalid camera details. Use:\n\"<name>\" <url>"})
+		return
+	}
+	shortcut, shortcutReason := h.autoShortcut(name)
+	err := h.store.Add(camera.Camera{Name: name, Shortcut: shortcut, URL: url})
+	switch {
+	case errors.Is(err, camera.ErrAlreadyExists):
+		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: fmt.Sprintf("Camera %q already exists.", name)})
+		return
+	case errors.Is(err, camera.ErrShortcutTaken):
+		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: fmt.Sprintf("Shortcut /%s is already used.", shortcut)})
+		return
+	case err != nil:
+		slog.Error("addcam failed", "command", "cameramanage", "chat_id", chatID, "username", username, "camera", name, "error", err.Error())
+		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: fmt.Sprintf("Failed to add camera: %s", err.Error())})
+		return
+	}
+	h.RegisterCommands(ctx, b)
+	msg := fmt.Sprintf("Added camera %q.", name)
+	if shortcut != "" {
+		msg += fmt.Sprintf("\nShortcut: /%s", shortcut)
+	} else {
+		msg += fmt.Sprintf("\nNo shortcut created because %s.", shortcutReason)
+	}
+	b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: msg})
+	h.cmdCameraManage(ctx, b, chatID, 0)
+}
+
+func (h *Handler) handleSetShortcutInput(ctx context.Context, b *tgbot.Bot, chatID int64, cameraID int64, input string) {
+	shortcut := normalizeShortcut(input)
+	switch {
+	case !validShortcut(shortcut):
+		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: "Shortcut must be 1-32 characters and contain only letters, numbers, or underscores."})
+		return
+	case reservedCommand(shortcut):
+		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: fmt.Sprintf("Shortcut /%s is reserved.", shortcut)})
+		return
+	}
+	if err := h.store.SetShortcutByID(cameraID, shortcut); err != nil {
+		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: fmt.Sprintf("Failed to set shortcut: %s", err.Error())})
+		return
+	}
+	h.RegisterCommands(ctx, b)
+	b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: fmt.Sprintf("Shortcut is now /%s.", shortcut)})
+	if cam, ok := h.store.FindByID(cameraID); ok {
+		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: fmt.Sprintf("Updated %q.", cam.Name), ReplyMarkup: cameraDetailKeyboard(cam)})
+	}
+}
+
 func (h *Handler) cmdCameras(ctx context.Context, b *tgbot.Bot, chatID int64) {
 	cams := h.store.List()
 	if len(cams) == 0 {
 		b.SendMessage(ctx, &tgbot.SendMessageParams{
 			ChatID: chatID,
-			Text:   "No cameras configured. Add one with:\n/addcam \"<name>\" <url>",
+			Text:   "No cameras configured. A superuser can add one with /cameramanage.",
 		})
 		return
 	}
@@ -683,155 +955,6 @@ func (h *Handler) cmdSnap(ctx context.Context, b *tgbot.Bot, chatID int64, user,
 		return
 	}
 	h.captureAndSend(ctx, b, chatID, user, cam)
-}
-
-func (h *Handler) cmdAddCam(ctx context.Context, b *tgbot.Bot, chatID int64, user, arg string) {
-	name, url, ok := parseNameURL(arg)
-	if !ok {
-		b.SendMessage(ctx, &tgbot.SendMessageParams{
-			ChatID: chatID,
-			Text:   "Usage: /addcam \"<name>\" <url>\nExample: /addcam \"Kantor Kiri\" rtsp://user:pass@host/stream",
-		})
-		return
-	}
-
-	shortcut, shortcutReason := h.autoShortcut(name)
-	err := h.store.Add(camera.Camera{Name: name, Shortcut: shortcut, URL: url})
-	switch {
-	case errors.Is(err, camera.ErrAlreadyExists):
-		b.SendMessage(ctx, &tgbot.SendMessageParams{
-			ChatID: chatID,
-			Text:   fmt.Sprintf("Camera %q already exists. Remove it first with /delcam.", name),
-		})
-		return
-	case errors.Is(err, camera.ErrInvalid):
-		b.SendMessage(ctx, &tgbot.SendMessageParams{
-			ChatID: chatID,
-			Text:   "Camera name and URL are required.",
-		})
-		return
-	case errors.Is(err, camera.ErrShortcutTaken):
-		b.SendMessage(ctx, &tgbot.SendMessageParams{
-			ChatID: chatID,
-			Text:   fmt.Sprintf("Shortcut /%s is already used. Add the camera with a different name or set a shortcut manually.", shortcut),
-		})
-		return
-	case err != nil:
-		slog.Error("addcam failed", "command", "addcam", "chat_id", chatID, "username", user, "camera", name, "error", err.Error())
-		b.SendMessage(ctx, &tgbot.SendMessageParams{
-			ChatID: chatID,
-			Text:   fmt.Sprintf("Failed to add camera: %s", err.Error()),
-		})
-		return
-	}
-
-	h.RegisterCommands(ctx, b)
-
-	slog.Info("command completed", "command", "addcam", "chat_id", chatID, "username", user, "camera", name)
-	msg := fmt.Sprintf("Added camera %q.", name)
-	if shortcut != "" {
-		msg += fmt.Sprintf("\nShortcut: /%s", shortcut)
-	} else {
-		msg += fmt.Sprintf("\nNo shortcut created because %s. Set one manually with:\n/setshortcut \"%s\" <shortcut>", shortcutReason, name)
-	}
-	b.SendMessage(ctx, &tgbot.SendMessageParams{
-		ChatID: chatID,
-		Text:   msg,
-	})
-}
-
-func (h *Handler) cmdDelCam(ctx context.Context, b *tgbot.Bot, chatID int64, user, arg string) {
-	name := strings.Trim(arg, " \t\"'")
-	if name == "" {
-		b.SendMessage(ctx, &tgbot.SendMessageParams{
-			ChatID: chatID,
-			Text:   "Usage: /delcam <name>",
-		})
-		return
-	}
-	err := h.store.Remove(name)
-	switch {
-	case errors.Is(err, camera.ErrNotFound):
-		b.SendMessage(ctx, &tgbot.SendMessageParams{
-			ChatID: chatID,
-			Text:   fmt.Sprintf("Unknown camera: %s. Use /cameras to list.", name),
-		})
-		return
-	case err != nil:
-		slog.Error("delcam failed", "command", "delcam", "chat_id", chatID, "username", user, "camera", name, "error", err.Error())
-		b.SendMessage(ctx, &tgbot.SendMessageParams{
-			ChatID: chatID,
-			Text:   fmt.Sprintf("Failed to remove camera: %s", err.Error()),
-		})
-		return
-	}
-
-	slog.Info("command completed", "command", "delcam", "chat_id", chatID, "username", user, "camera", name)
-	h.RegisterCommands(ctx, b)
-	b.SendMessage(ctx, &tgbot.SendMessageParams{
-		ChatID: chatID,
-		Text:   fmt.Sprintf("Removed camera %q.", name),
-	})
-}
-
-func (h *Handler) cmdSetShortcut(ctx context.Context, b *tgbot.Bot, chatID int64, arg string) {
-	name, rawShortcut, ok := parseNameValue(arg)
-	if !ok {
-		b.SendMessage(ctx, &tgbot.SendMessageParams{
-			ChatID: chatID,
-			Text:   "Usage: /setshortcut \"<name>\" <shortcut>\nExample: /setshortcut \"Front Gate\" front_gate",
-		})
-		return
-	}
-
-	shortcut := normalizeShortcut(rawShortcut)
-	switch {
-	case !validShortcut(shortcut):
-		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: "Shortcut must be 1-32 characters and contain only letters, numbers, or underscores."})
-		return
-	case reservedCommand(shortcut):
-		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: fmt.Sprintf("Shortcut /%s is reserved.", shortcut)})
-		return
-	}
-
-	err := h.store.SetShortcut(name, shortcut)
-	switch {
-	case errors.Is(err, camera.ErrNotFound):
-		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: fmt.Sprintf("Unknown camera: %s. Use /cameras to list.", name)})
-		return
-	case errors.Is(err, camera.ErrShortcutTaken):
-		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: fmt.Sprintf("Shortcut /%s is already used.", shortcut)})
-		return
-	case err != nil:
-		slog.Error("setshortcut failed", "chat_id", chatID, "camera", name, "shortcut", shortcut, "error", err.Error())
-		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: fmt.Sprintf("Failed to set shortcut: %s", err.Error())})
-		return
-	}
-
-	h.RegisterCommands(ctx, b)
-	b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: fmt.Sprintf("Shortcut for %q is now /%s.", name, shortcut)})
-}
-
-func (h *Handler) cmdDelShortcut(ctx context.Context, b *tgbot.Bot, chatID int64, arg string) {
-	name := strings.Trim(arg, " \t\"'")
-	if name == "" {
-		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: "Usage: /delshortcut <name>"})
-		return
-	}
-
-	err := h.store.DeleteShortcut(name)
-	switch {
-	case errors.Is(err, camera.ErrNotFound):
-		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: fmt.Sprintf("Unknown camera: %s. Use /cameras to list.", name)})
-		return
-	case err != nil:
-		slog.Error("delshortcut failed", "chat_id", chatID, "camera", name, "error", err.Error())
-		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: fmt.Sprintf("Failed to remove shortcut: %s", err.Error())})
-		return
-	}
-
-	h.RegisterCommands(ctx, b)
-	b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: fmt.Sprintf("Removed shortcut for %q.", name)})
 }
 
 func (h *Handler) captureAndSend(ctx context.Context, b *tgbot.Bot, chatID int64, user string, cam camera.Camera) {

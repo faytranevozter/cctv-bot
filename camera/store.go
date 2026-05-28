@@ -9,6 +9,7 @@ import (
 
 // Camera is a configured stream entry.
 type Camera struct {
+	ID       int64  `json:"id"`
 	Name     string `json:"name"`
 	Shortcut string `json:"shortcut,omitempty"`
 	URL      string `json:"url"`
@@ -33,7 +34,7 @@ func NewStore(db *sql.DB) *Store {
 
 // List returns all cameras ordered by insertion order.
 func (s *Store) List() []Camera {
-	rows, err := s.db.Query(`SELECT name, COALESCE(shortcut, ''), url FROM cameras ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, name, COALESCE(shortcut, ''), url FROM cameras ORDER BY id`)
 	if err != nil {
 		return nil
 	}
@@ -42,7 +43,7 @@ func (s *Store) List() []Camera {
 	var cams []Camera
 	for rows.Next() {
 		var cam Camera
-		if err := rows.Scan(&cam.Name, &cam.Shortcut, &cam.URL); err == nil {
+		if err := rows.Scan(&cam.ID, &cam.Name, &cam.Shortcut, &cam.URL); err == nil {
 			cams = append(cams, cam)
 		}
 	}
@@ -60,7 +61,7 @@ func (s *Store) Count() int {
 
 // Find looks up a camera by case-insensitive name match.
 func (s *Store) Find(name string) (Camera, bool) {
-	return s.find(`SELECT name, COALESCE(shortcut, ''), url FROM cameras WHERE name = ? COLLATE NOCASE`, strings.TrimSpace(name))
+	return s.find(`SELECT id, name, COALESCE(shortcut, ''), url FROM cameras WHERE name = ? COLLATE NOCASE`, strings.TrimSpace(name))
 }
 
 // FindByShortcut looks up a camera by case-insensitive shortcut match.
@@ -69,12 +70,17 @@ func (s *Store) FindByShortcut(shortcut string) (Camera, bool) {
 	if shortcut == "" {
 		return Camera{}, false
 	}
-	return s.find(`SELECT name, COALESCE(shortcut, ''), url FROM cameras WHERE shortcut = ? COLLATE NOCASE`, shortcut)
+	return s.find(`SELECT id, name, COALESCE(shortcut, ''), url FROM cameras WHERE shortcut = ? COLLATE NOCASE`, shortcut)
 }
 
-func (s *Store) find(query, arg string) (Camera, bool) {
+// FindByID looks up a camera by database ID.
+func (s *Store) FindByID(id int64) (Camera, bool) {
+	return s.find(`SELECT id, name, COALESCE(shortcut, ''), url FROM cameras WHERE id = ?`, id)
+}
+
+func (s *Store) find(query string, arg any) (Camera, bool) {
 	var cam Camera
-	err := s.db.QueryRow(query, arg).Scan(&cam.Name, &cam.Shortcut, &cam.URL)
+	err := s.db.QueryRow(query, arg).Scan(&cam.ID, &cam.Name, &cam.Shortcut, &cam.URL)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Camera{}, false
 	}
@@ -133,6 +139,31 @@ func (s *Store) SetShortcut(name, shortcut string) error {
 	return nil
 }
 
+// SetShortcutByID assigns a shortcut to a camera by database ID.
+func (s *Store) SetShortcutByID(id int64, shortcut string) error {
+	shortcut = strings.TrimPrefix(strings.TrimSpace(shortcut), "/")
+	if id == 0 || shortcut == "" {
+		return ErrInvalidShortcut
+	}
+
+	cam, ok := s.FindByID(id)
+	if !ok {
+		return ErrNotFound
+	}
+	if existing, ok := s.FindByShortcut(shortcut); ok && existing.ID != cam.ID {
+		return ErrShortcutTaken
+	}
+
+	res, err := s.db.Exec(`UPDATE cameras SET shortcut = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, shortcut, id)
+	if err != nil {
+		return fmt.Errorf("set shortcut: %w", err)
+	}
+	if changed, _ := res.RowsAffected(); changed == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // DeleteShortcut removes a shortcut from a camera by case-insensitive camera name.
 func (s *Store) DeleteShortcut(name string) error {
 	name = strings.TrimSpace(name)
@@ -149,9 +180,36 @@ func (s *Store) DeleteShortcut(name string) error {
 	return nil
 }
 
+// DeleteShortcutByID removes a shortcut from a camera by database ID.
+func (s *Store) DeleteShortcutByID(id int64) error {
+	if id == 0 {
+		return ErrNotFound
+	}
+	res, err := s.db.Exec(`UPDATE cameras SET shortcut = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete shortcut: %w", err)
+	}
+	if changed, _ := res.RowsAffected(); changed == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // Remove deletes a camera by case-insensitive name. Returns ErrNotFound if absent.
 func (s *Store) Remove(name string) error {
 	res, err := s.db.Exec(`DELETE FROM cameras WHERE name = ? COLLATE NOCASE`, strings.TrimSpace(name))
+	if err != nil {
+		return fmt.Errorf("delete camera: %w", err)
+	}
+	if changed, _ := res.RowsAffected(); changed == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// RemoveByID deletes a camera by database ID.
+func (s *Store) RemoveByID(id int64) error {
+	res, err := s.db.Exec(`DELETE FROM cameras WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete camera: %w", err)
 	}

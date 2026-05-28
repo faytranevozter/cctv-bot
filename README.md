@@ -23,24 +23,18 @@ The bot registers these commands with Telegram on startup:
 | --- | --- |
 | `/requestaccess [reason]` | Request access for the current chat. |
 | `/authorized` | Superuser dashboard for pending requests and authorized chats. |
+| `/cameramanage` | Superuser camera management dashboard. |
 | `/snap <name>` | Capture from a specific camera. |
 | `/cameras` | List configured cameras. |
-| `/addcam "<name>" <url>` | Add a camera. Quote names that contain spaces. |
-| `/delcam <name>` | Remove a camera. |
-| `/setshortcut "<name>" <shortcut>` | Assign or replace a camera shortcut. |
-| `/delshortcut <name>` | Remove a camera shortcut. |
 | `/help` | Show the command reference. |
 
-Management commands are superuser-only:
+Camera management is superuser-only and button-based:
 
 ```text
-/addcam
-/delcam
-/setshortcut
-/delshortcut
+/cameramanage
 ```
 
-Only users listed in `SUPERUSER_IDS` can run these commands.
+Only users listed in `SUPERUSER_IDS` can open the dashboard. It is only available in superuser private chat to avoid leaking camera URLs in groups.
 
 Camera shortcuts are also registered as commands. For example, if camera `Gamping` has shortcut `gamping`, users can run:
 
@@ -60,13 +54,10 @@ Commands targeted at another bot username are ignored.
 Examples:
 
 ```text
-/addcam "Front Gate" rtsp://user:pass@192.168.1.10/stream
+/cameramanage
 /cameras
 /snap "Front Gate"
-/setshortcut "Front Gate" front_gate
 /front_gate
-/delshortcut "Front Gate"
-/delcam "Front Gate"
 ```
 
 ## Requirements
@@ -149,7 +140,7 @@ The dashboard shows both authorized chats and pending requests. Authorized chats
 
 Cameras, authorized chats, and pending access requests are stored in SQLite. There is no default camera command; capture by camera name with `/snap <name>` or by a configured shortcut such as `/gamping`.
 
-When a camera is added with `/addcam`, the bot tries to create a shortcut automatically from the camera name:
+When a camera is added from `/cameramanage`, the bot tries to create a shortcut automatically from the camera name:
 
 | Camera Name | Auto Shortcut |
 | --- | --- |
@@ -170,11 +161,7 @@ pending_access_requests
 
 SQLite is opened with WAL mode and a busy timeout so runtime updates can be handled safely by the bot process.
 
-The `shortcut` field is optional. Existing camera entries without shortcuts still work with `/snap <name>` and can be assigned a shortcut later:
-
-```text
-/setshortcut "Front Gate" front_gate
-```
+The `shortcut` field is optional. Existing camera entries without shortcuts still work with `/snap <name>` and can be assigned a shortcut from `/cameramanage`.
 
 ## Local Development
 
@@ -257,21 +244,17 @@ The bot registers commands on startup and after camera shortcut changes. Restart
 
 ### No cameras are configured
 
-Add one from Telegram:
+Add one from Telegram using the superuser private dashboard:
 
 ```text
-/addcam "Front Gate" rtsp://user:pass@192.168.1.10/stream
+/cameramanage
 ```
 
 The camera is stored in SQLite.
 
 ### A shortcut was not created automatically
 
-The generated shortcut may be invalid, reserved, or already used. Set one manually:
-
-```text
-/setshortcut "Front Gate" front_gate
-```
+The generated shortcut may be invalid, reserved, or already used. Set one manually from `/cameramanage`.
 
 ### FFmpeg is not found
 
