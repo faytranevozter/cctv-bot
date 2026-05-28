@@ -30,6 +30,11 @@ type Handler struct {
 	pending     map[int64]pendingCameraAction
 }
 
+type chatTarget struct {
+	ChatID          int64
+	MessageThreadID int
+}
+
 type pendingCameraAction struct {
 	Kind     string
 	CameraID int64
@@ -96,6 +101,7 @@ func (h *Handler) DefaultHandler(ctx context.Context, b *tgbot.Bot, update *mode
 	}
 
 	chatID := update.Message.Chat.ID
+	target := messageTarget(update.Message)
 	chatType := update.Message.Chat.Type
 	text := strings.TrimSpace(update.Message.Text)
 	user := update.Message.From.Username
@@ -113,48 +119,59 @@ func (h *Handler) DefaultHandler(ctx context.Context, b *tgbot.Bot, update *mode
 
 	switch cmd {
 	case "/start":
-		h.cmdStart(ctx, b, chatID)
+		h.cmdStart(ctx, b, target)
 	case "/help":
-		h.cmdHelp(ctx, b, chatID)
+		h.cmdHelp(ctx, b, target)
 	case "/requestaccess":
 		h.cmdRequestAccess(ctx, b, update, rest)
 	case "/authorized":
-		if !h.requireSuperuser(ctx, b, chatID, userID, user) {
+		if !h.requireSuperuser(ctx, b, target, userID, user) {
 			return
 		}
 		h.cmdAuthorized(ctx, b, chatID, 0)
 	case "/cameramanage":
-		if !h.requireSuperuserPrivate(ctx, b, chatID, chatType, userID, user) {
+		if !h.requireSuperuserPrivate(ctx, b, target, chatType, userID, user) {
 			return
 		}
 		h.cmdCameraManage(ctx, b, chatID, 0)
 	case "/cameras":
-		if !h.requireAuthorized(ctx, b, chatID, chatType, userID, user, cmd) {
+		if !h.requireAuthorized(ctx, b, target, chatType, userID, user, cmd) {
 			return
 		}
-		h.cmdCameras(ctx, b, chatID)
+		h.cmdCameras(ctx, b, target)
 	case "/snap":
-		if !h.requireAuthorized(ctx, b, chatID, chatType, userID, user, cmd) {
+		if !h.requireAuthorized(ctx, b, target, chatType, userID, user, cmd) {
 			return
 		}
-		h.cmdSnap(ctx, b, chatID, user, rest)
+		h.cmdSnap(ctx, b, target, user, rest)
 	case "/addcam":
-		h.redirectCameraManage(ctx, b, chatID, userID, user)
+		h.redirectCameraManage(ctx, b, target, userID, user)
 	case "/delcam":
-		h.redirectCameraManage(ctx, b, chatID, userID, user)
+		h.redirectCameraManage(ctx, b, target, userID, user)
 	case "/setshortcut":
-		h.redirectCameraManage(ctx, b, chatID, userID, user)
+		h.redirectCameraManage(ctx, b, target, userID, user)
 	case "/delshortcut":
-		h.redirectCameraManage(ctx, b, chatID, userID, user)
+		h.redirectCameraManage(ctx, b, target, userID, user)
 	default:
-		if !h.requireAuthorized(ctx, b, chatID, chatType, userID, user, cmd) {
+		if !h.requireAuthorized(ctx, b, target, chatType, userID, user, cmd) {
 			return
 		}
 		shortcut := strings.TrimPrefix(cmd, "/")
 		if cam, ok := h.store.FindByShortcut(shortcut); ok {
-			h.captureAndSend(ctx, b, chatID, user, cam)
+			h.captureAndSend(ctx, b, target, user, cam)
 		}
 	}
+}
+
+func messageTarget(msg *models.Message) chatTarget {
+	if msg == nil {
+		return chatTarget{}
+	}
+	return chatTarget{ChatID: msg.Chat.ID, MessageThreadID: msg.MessageThreadID}
+}
+
+func sendMessageParams(target chatTarget, text string) *tgbot.SendMessageParams {
+	return &tgbot.SendMessageParams{ChatID: target.ChatID, MessageThreadID: target.MessageThreadID, Text: text}
 }
 
 func (h *Handler) CallbackHandler(ctx context.Context, b *tgbot.Bot, update *models.Update) {
@@ -251,7 +268,7 @@ func (h *Handler) handleSnapCallback(ctx context.Context, b *tgbot.Bot, q *model
 		return
 	}
 	b.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{CallbackQueryID: q.ID})
-	h.captureAndSend(ctx, b, chat.ID, q.From.Username, cam)
+	h.captureAndSend(ctx, b, messageTarget(q.Message.Message), q.From.Username, cam)
 }
 
 func (h *Handler) normalizeCommand(cmd string) (string, bool) {
@@ -270,39 +287,39 @@ func (h *Handler) isSuperuser(userID int64) bool {
 	return h.cfg.SuperuserIDs[userID]
 }
 
-func (h *Handler) requireSuperuser(ctx context.Context, b *tgbot.Bot, chatID, userID int64, username string) bool {
+func (h *Handler) requireSuperuser(ctx context.Context, b *tgbot.Bot, target chatTarget, userID int64, username string) bool {
 	if h.isSuperuser(userID) {
 		return true
 	}
-	slog.Warn("superuser command denied", "chat_id", chatID, "user_id", userID, "username", username)
-	b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: "Only superusers can use this command."})
+	slog.Warn("superuser command denied", "chat_id", target.ChatID, "message_thread_id", target.MessageThreadID, "user_id", userID, "username", username)
+	b.SendMessage(ctx, sendMessageParams(target, "Only superusers can use this command."))
 	return false
 }
 
-func (h *Handler) requireSuperuserPrivate(ctx context.Context, b *tgbot.Bot, chatID int64, chatType models.ChatType, userID int64, username string) bool {
-	if !h.requireSuperuser(ctx, b, chatID, userID, username) {
+func (h *Handler) requireSuperuserPrivate(ctx context.Context, b *tgbot.Bot, target chatTarget, chatType models.ChatType, userID int64, username string) bool {
+	if !h.requireSuperuser(ctx, b, target, userID, username) {
 		return false
 	}
 	if chatType == models.ChatTypePrivate {
 		return true
 	}
-	b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: "Camera management is only available in superuser private chat."})
+	b.SendMessage(ctx, sendMessageParams(target, "Camera management is only available in superuser private chat."))
 	return false
 }
 
-func (h *Handler) redirectCameraManage(ctx context.Context, b *tgbot.Bot, chatID, userID int64, username string) {
-	if !h.requireSuperuser(ctx, b, chatID, userID, username) {
+func (h *Handler) redirectCameraManage(ctx context.Context, b *tgbot.Bot, target chatTarget, userID int64, username string) {
+	if !h.requireSuperuser(ctx, b, target, userID, username) {
 		return
 	}
-	b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: "Use /cameramanage to manage cameras with buttons."})
+	b.SendMessage(ctx, sendMessageParams(target, "Use /cameramanage to manage cameras with buttons."))
 }
 
-func (h *Handler) requireAuthorized(ctx context.Context, b *tgbot.Bot, chatID int64, chatType models.ChatType, userID int64, username, cmd string) bool {
-	if h.isAuthorized(chatID, chatType, userID) {
+func (h *Handler) requireAuthorized(ctx context.Context, b *tgbot.Bot, target chatTarget, chatType models.ChatType, userID int64, username, cmd string) bool {
+	if h.isAuthorized(target.ChatID, chatType, userID) {
 		return true
 	}
-	slog.Warn("unauthorized", "chat_id", chatID, "user_id", userID, "username", username, "command", cmd)
-	b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: "This chat is not authorized. Ask a group admin to run /requestaccess."})
+	slog.Warn("unauthorized", "chat_id", target.ChatID, "message_thread_id", target.MessageThreadID, "user_id", userID, "username", username, "command", cmd)
+	b.SendMessage(ctx, sendMessageParams(target, "This chat is not authorized. Ask a group admin to run /requestaccess."))
 	return false
 }
 
@@ -422,7 +439,7 @@ func (h *Handler) autoShortcut(name string) (string, string) {
 	return shortcut, ""
 }
 
-func (h *Handler) cmdStart(ctx context.Context, b *tgbot.Bot, chatID int64) {
+func (h *Handler) cmdStart(ctx context.Context, b *tgbot.Bot, target chatTarget) {
 	var sb strings.Builder
 	sb.WriteString("CCTV Monitor Bot\n\nCommands:\n")
 	for i, item := range commandHelpItems {
@@ -436,22 +453,23 @@ func (h *Handler) cmdStart(ctx context.Context, b *tgbot.Bot, chatID int64) {
 		fmt.Fprintf(&sb, "%s - %s", usage, item.Description)
 	}
 	msg := sb.String()
-	b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: msg})
+	b.SendMessage(ctx, sendMessageParams(target, msg))
 }
 
-func (h *Handler) cmdHelp(ctx context.Context, b *tgbot.Bot, chatID int64) {
-	h.cmdStart(ctx, b, chatID)
+func (h *Handler) cmdHelp(ctx context.Context, b *tgbot.Bot, target chatTarget) {
+	h.cmdStart(ctx, b, target)
 }
 
 func (h *Handler) cmdRequestAccess(ctx context.Context, b *tgbot.Bot, update *models.Update, reason string) {
 	msg := update.Message
 	chatID := msg.Chat.ID
+	target := messageTarget(msg)
 	chatType := msg.Chat.Type
 	userID := msg.From.ID
 	username := msg.From.Username
 
 	if h.authStore.IsAuthorized(chatID) || (chatType == models.ChatTypePrivate && h.isSuperuser(userID)) {
-		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: "This chat is already authorized."})
+		b.SendMessage(ctx, sendMessageParams(target, "This chat is already authorized."))
 		return
 	}
 
@@ -459,17 +477,17 @@ func (h *Handler) cmdRequestAccess(ctx context.Context, b *tgbot.Bot, update *mo
 		ok, err := h.isGroupAdmin(ctx, b, chatID, chatType, userID)
 		if err != nil {
 			slog.Warn("request access admin check failed", "chat_id", chatID, "user_id", userID, "username", username, "error", err.Error())
-			b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: "Could not verify admin status. Try again later."})
+			b.SendMessage(ctx, sendMessageParams(target, "Could not verify admin status. Try again later."))
 			return
 		}
 		if !ok {
-			b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: "Only group admins can request access for this group."})
+			b.SendMessage(ctx, sendMessageParams(target, "Only group admins can request access for this group."))
 			return
 		}
 	}
 
 	if _, ok := h.authStore.Pending(chatID); ok {
-		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: "Access request is already pending."})
+		b.SendMessage(ctx, sendMessageParams(target, "Access request is already pending."))
 		return
 	}
 
@@ -484,11 +502,11 @@ func (h *Handler) cmdRequestAccess(ctx context.Context, b *tgbot.Bot, update *mo
 	}
 	if err := h.authStore.UpsertPending(req); err != nil {
 		slog.Error("request access failed", "chat_id", chatID, "error", err.Error())
-		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: fmt.Sprintf("Failed to create access request: %s", err.Error())})
+		b.SendMessage(ctx, sendMessageParams(target, fmt.Sprintf("Failed to create access request: %s", err.Error())))
 		return
 	}
 
-	b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: fmt.Sprintf("Access request sent to superuser.\nChat ID: %d", chatID)})
+	b.SendMessage(ctx, sendMessageParams(target, fmt.Sprintf("Access request sent to superuser.\nChat ID: %d", chatID)))
 	h.notifySuperusers(ctx, b, req)
 }
 
@@ -815,7 +833,7 @@ func (h *Handler) handleCameraAction(ctx context.Context, b *tgbot.Bot, chatID i
 			b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: "Camera not found."})
 			return
 		}
-		h.captureAndSend(ctx, b, chatID, username, cam)
+		h.captureAndSend(ctx, b, chatTarget{ChatID: chatID}, username, cam)
 	case "rn":
 		cam, ok := h.store.FindByID(cameraID)
 		if !ok {
@@ -988,13 +1006,10 @@ func (h *Handler) handleSetShortcutInput(ctx context.Context, b *tgbot.Bot, chat
 	}
 }
 
-func (h *Handler) cmdCameras(ctx context.Context, b *tgbot.Bot, chatID int64) {
+func (h *Handler) cmdCameras(ctx context.Context, b *tgbot.Bot, target chatTarget) {
 	cams := h.store.List()
 	if len(cams) == 0 {
-		b.SendMessage(ctx, &tgbot.SendMessageParams{
-			ChatID: chatID,
-			Text:   "No cameras configured. A superuser can add one with /cameramanage.",
-		})
+		b.SendMessage(ctx, sendMessageParams(target, "No cameras configured. A superuser can add one with /cameramanage."))
 		return
 	}
 
@@ -1011,37 +1026,35 @@ func (h *Handler) cmdCameras(ctx context.Context, b *tgbot.Bot, chatID int64) {
 		}
 		fmt.Fprintf(&sb, "\n  %s\n", masked)
 	}
-	b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: sb.String()})
+	b.SendMessage(ctx, sendMessageParams(target, sb.String()))
 }
 
-func (h *Handler) cmdSnap(ctx context.Context, b *tgbot.Bot, chatID int64, user, arg string) {
+func (h *Handler) cmdSnap(ctx context.Context, b *tgbot.Bot, target chatTarget, user, arg string) {
 	name := strings.Trim(arg, " \t\"'")
 	if name == "" {
-		h.sendSnapPicker(ctx, b, chatID)
+		h.sendSnapPicker(ctx, b, target)
 		return
 	}
 	cam, ok := h.store.Find(name)
 	if !ok {
-		b.SendMessage(ctx, &tgbot.SendMessageParams{
-			ChatID: chatID,
-			Text:   fmt.Sprintf("Unknown camera: %s. Use /cameras to list.", name),
-		})
+		b.SendMessage(ctx, sendMessageParams(target, fmt.Sprintf("Unknown camera: %s. Use /cameras to list.", name)))
 		return
 	}
-	h.captureAndSend(ctx, b, chatID, user, cam)
+	h.captureAndSend(ctx, b, target, user, cam)
 }
 
-func (h *Handler) sendSnapPicker(ctx context.Context, b *tgbot.Bot, chatID int64) {
+func (h *Handler) sendSnapPicker(ctx context.Context, b *tgbot.Bot, target chatTarget) {
 	cams := h.store.List()
 	if len(cams) == 0 {
-		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: "No cameras configured."})
+		b.SendMessage(ctx, sendMessageParams(target, "No cameras configured."))
 		return
 	}
 
 	b.SendMessage(ctx, &tgbot.SendMessageParams{
-		ChatID:      chatID,
-		Text:        "Choose a camera to capture:",
-		ReplyMarkup: snapPickerKeyboard(cams),
+		ChatID:          target.ChatID,
+		MessageThreadID: target.MessageThreadID,
+		Text:            "Choose a camera to capture:",
+		ReplyMarkup:     snapPickerKeyboard(cams),
 	})
 }
 
@@ -1056,11 +1069,11 @@ func snapPickerKeyboard(cams []camera.Camera) *models.InlineKeyboardMarkup {
 	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
-func (h *Handler) captureAndSend(ctx context.Context, b *tgbot.Bot, chatID int64, user string, cam camera.Camera) {
+func (h *Handler) captureAndSend(ctx context.Context, b *tgbot.Bot, target chatTarget, user string, cam camera.Camera) {
 	start := time.Now()
 
-	if _, err := b.SendChatAction(ctx, &tgbot.SendChatActionParams{ChatID: chatID, Action: models.ChatActionUploadPhoto}); err != nil {
-		slog.Warn("send chat action failed", "chat_id", chatID, "username", user, "camera", cam.Name, "error", err.Error())
+	if _, err := b.SendChatAction(ctx, &tgbot.SendChatActionParams{ChatID: target.ChatID, MessageThreadID: target.MessageThreadID, Action: models.ChatActionUploadPhoto}); err != nil {
+		slog.Warn("send chat action failed", "chat_id", target.ChatID, "message_thread_id", target.MessageThreadID, "username", user, "camera", cam.Name, "error", err.Error())
 	}
 
 	h.sema.Acquire()
@@ -1071,16 +1084,14 @@ func (h *Handler) captureAndSend(ctx context.Context, b *tgbot.Bot, chatID int64
 		dur := time.Since(start).Milliseconds()
 		slog.Error("capture failed",
 			"command", "capture",
-			"chat_id", chatID,
+			"chat_id", target.ChatID,
+			"message_thread_id", target.MessageThreadID,
 			"username", user,
 			"camera", cam.Name,
 			"duration_ms", dur,
 			"error", err.Error(),
 		)
-		b.SendMessage(ctx, &tgbot.SendMessageParams{
-			ChatID: chatID,
-			Text:   fmt.Sprintf("Failed to capture frame: %s", err.Error()),
-		})
+		b.SendMessage(ctx, sendMessageParams(target, fmt.Sprintf("Failed to capture frame: %s", err.Error())))
 		return
 	}
 	defer os.Remove(path)
@@ -1090,16 +1101,14 @@ func (h *Handler) captureAndSend(ctx context.Context, b *tgbot.Bot, chatID int64
 		dur := time.Since(start).Milliseconds()
 		slog.Error("read failed",
 			"command", "capture",
-			"chat_id", chatID,
+			"chat_id", target.ChatID,
+			"message_thread_id", target.MessageThreadID,
 			"username", user,
 			"camera", cam.Name,
 			"duration_ms", dur,
 			"error", err.Error(),
 		)
-		b.SendMessage(ctx, &tgbot.SendMessageParams{
-			ChatID: chatID,
-			Text:   fmt.Sprintf("Failed to read frame: %s", err.Error()),
-		})
+		b.SendMessage(ctx, sendMessageParams(target, fmt.Sprintf("Failed to read frame: %s", err.Error())))
 		return
 	}
 
@@ -1110,16 +1119,18 @@ func (h *Handler) captureAndSend(ctx context.Context, b *tgbot.Bot, chatID int64
 	caption := fmt.Sprintf("%s · %s", cam.Name, time.Now().In(loc).Format("2006-01-02 15:04:05 WIB"))
 
 	_, sendErr := b.SendPhoto(ctx, &tgbot.SendPhotoParams{
-		ChatID:  chatID,
-		Caption: caption,
-		Photo:   &models.InputFileUpload{Filename: "snapshot.jpg", Data: bytes.NewReader(data)},
+		ChatID:          target.ChatID,
+		MessageThreadID: target.MessageThreadID,
+		Caption:         caption,
+		Photo:           &models.InputFileUpload{Filename: "snapshot.jpg", Data: bytes.NewReader(data)},
 	})
 
 	dur := time.Since(start).Milliseconds()
 	if sendErr != nil {
 		slog.Error("send failed",
 			"command", "capture",
-			"chat_id", chatID,
+			"chat_id", target.ChatID,
+			"message_thread_id", target.MessageThreadID,
 			"username", user,
 			"camera", cam.Name,
 			"duration_ms", dur,
@@ -1128,7 +1139,8 @@ func (h *Handler) captureAndSend(ctx context.Context, b *tgbot.Bot, chatID int64
 	} else {
 		slog.Info("command completed",
 			"command", "capture",
-			"chat_id", chatID,
+			"chat_id", target.ChatID,
+			"message_thread_id", target.MessageThreadID,
 			"username", user,
 			"camera", cam.Name,
 			"duration_ms", dur,

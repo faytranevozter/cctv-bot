@@ -113,6 +113,8 @@ MAX_CONCURRENT_CAPTURES=3
 
 The bot no longer uses `ALLOWED_CHAT_IDS`. Access is managed by superusers configured in `SUPERUSER_IDS`.
 
+In Telegram forum supergroups, commands sent inside a topic are answered in the same topic. Authorization remains chat-wide: approving a supergroup authorizes the whole chat, not an individual topic.
+
 Unauthorized chats can request access:
 
 ```text
