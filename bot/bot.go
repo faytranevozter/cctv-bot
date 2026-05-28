@@ -1023,10 +1023,9 @@ func snapPickerKeyboard(cams []camera.Camera) *models.InlineKeyboardMarkup {
 func (h *Handler) captureAndSend(ctx context.Context, b *tgbot.Bot, chatID int64, user string, cam camera.Camera) {
 	start := time.Now()
 
-	b.SendMessage(ctx, &tgbot.SendMessageParams{
-		ChatID: chatID,
-		Text:   "Capturing frame, please wait...",
-	})
+	if _, err := b.SendChatAction(ctx, &tgbot.SendChatActionParams{ChatID: chatID, Action: models.ChatActionUploadPhoto}); err != nil {
+		slog.Warn("send chat action failed", "chat_id", chatID, "username", user, "camera", cam.Name, "error", err.Error())
+	}
 
 	h.sema.Acquire()
 	defer h.sema.Release()
