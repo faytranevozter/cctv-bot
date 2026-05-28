@@ -1035,9 +1035,5 @@ func (h *Handler) captureAndSend(ctx context.Context, b *tgbot.Bot, chatID int64
 			"camera", cam.Name,
 			"duration_ms", dur,
 		)
-		b.SendMessage(ctx, &tgbot.SendMessageParams{
-			ChatID: chatID,
-			Text:   "Terekam",
-		})
 	}
 }
