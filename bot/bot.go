@@ -125,34 +125,22 @@ func (h *Handler) DefaultHandler(ctx context.Context, b *tgbot.Bot, update *mode
 		}
 		h.cmdSnap(ctx, b, chatID, user, rest)
 	case "/addcam":
-		if !h.requireAuthorized(ctx, b, chatID, chatType, userID, user, cmd) {
-			return
-		}
-		if !h.requireAdmin(ctx, b, chatID, chatType, userID, user, cmd) {
+		if !h.requireSuperuser(ctx, b, chatID, userID, user) {
 			return
 		}
 		h.cmdAddCam(ctx, b, chatID, user, rest)
 	case "/delcam":
-		if !h.requireAuthorized(ctx, b, chatID, chatType, userID, user, cmd) {
-			return
-		}
-		if !h.requireAdmin(ctx, b, chatID, chatType, userID, user, cmd) {
+		if !h.requireSuperuser(ctx, b, chatID, userID, user) {
 			return
 		}
 		h.cmdDelCam(ctx, b, chatID, user, rest)
 	case "/setshortcut":
-		if !h.requireAuthorized(ctx, b, chatID, chatType, userID, user, cmd) {
-			return
-		}
-		if !h.requireAdmin(ctx, b, chatID, chatType, userID, user, cmd) {
+		if !h.requireSuperuser(ctx, b, chatID, userID, user) {
 			return
 		}
 		h.cmdSetShortcut(ctx, b, chatID, rest)
 	case "/delshortcut":
-		if !h.requireAuthorized(ctx, b, chatID, chatType, userID, user, cmd) {
-			return
-		}
-		if !h.requireAdmin(ctx, b, chatID, chatType, userID, user, cmd) {
+		if !h.requireSuperuser(ctx, b, chatID, userID, user) {
 			return
 		}
 		h.cmdDelShortcut(ctx, b, chatID, rest)
@@ -269,25 +257,6 @@ func (h *Handler) isGroupAdmin(ctx context.Context, b *tgbot.Bot, chatID int64, 
 		return false, err
 	}
 	return member.Type == models.ChatMemberTypeOwner || member.Type == models.ChatMemberTypeAdministrator, nil
-}
-
-func (h *Handler) requireAdmin(ctx context.Context, b *tgbot.Bot, chatID int64, chatType models.ChatType, userID int64, username, cmd string) bool {
-	ok, err := h.isGroupAdmin(ctx, b, chatID, chatType, userID)
-	if err != nil {
-		slog.Warn("admin check failed", "chat_id", chatID, "user_id", userID, "username", username, "command", cmd, "error", err.Error())
-		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: "Could not verify admin status. Try again later."})
-		return false
-	}
-	if ok {
-		return true
-	}
-	h.denyAdminCommand(ctx, b, chatID, userID, username, cmd, "not_admin")
-	return false
-}
-
-func (h *Handler) denyAdminCommand(ctx context.Context, b *tgbot.Bot, chatID, userID int64, username, cmd, reason string) {
-	slog.Warn("admin command denied", "chat_id", chatID, "user_id", userID, "username", username, "command", cmd, "reason", reason)
-	b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: "Only group admins can manage cameras and shortcuts."})
 }
 
 // splitCommand returns the command word and the remaining argument string.
