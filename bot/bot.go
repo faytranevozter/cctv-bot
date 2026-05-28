@@ -162,6 +162,10 @@ func (h *Handler) CallbackHandler(ctx context.Context, b *tgbot.Bot, update *mod
 		return
 	}
 	q := update.CallbackQuery
+	if strings.HasPrefix(q.Data, "snap:") {
+		h.handleSnapCallback(ctx, b, q)
+		return
+	}
 	if !strings.HasPrefix(q.Data, "auth:") && !strings.HasPrefix(q.Data, "cam:") {
 		return
 	}
@@ -217,6 +221,39 @@ func callbackMessage(q *models.CallbackQuery) (chatID int64, messageID int, ok b
 	return q.Message.Message.Chat.ID, q.Message.Message.ID, true
 }
 
+func callbackChat(q *models.CallbackQuery) (models.Chat, bool) {
+	if q.Message.Message == nil {
+		return models.Chat{}, false
+	}
+	return q.Message.Message.Chat, true
+}
+
+func (h *Handler) handleSnapCallback(ctx context.Context, b *tgbot.Bot, q *models.CallbackQuery) {
+	chat, ok := callbackChat(q)
+	if !ok {
+		b.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{CallbackQueryID: q.ID})
+		return
+	}
+	if !h.isAuthorized(chat.ID, chat.Type, q.From.ID) {
+		b.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{CallbackQueryID: q.ID, Text: "This chat is not authorized.", ShowAlert: true})
+		return
+	}
+
+	idText := strings.TrimPrefix(q.Data, "snap:")
+	cameraID, err := strconv.ParseInt(idText, 10, 64)
+	if err != nil {
+		b.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{CallbackQueryID: q.ID, Text: "Invalid camera selection.", ShowAlert: true})
+		return
+	}
+	cam, ok := h.store.FindByID(cameraID)
+	if !ok {
+		b.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{CallbackQueryID: q.ID, Text: "Camera not found.", ShowAlert: true})
+		return
+	}
+	b.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{CallbackQueryID: q.ID})
+	h.captureAndSend(ctx, b, chat.ID, q.From.Username, cam)
+}
+
 func (h *Handler) normalizeCommand(cmd string) (string, bool) {
 	cmd = strings.ToLower(strings.TrimSpace(cmd))
 	name, target, hasTarget := strings.Cut(cmd, "@")
@@ -261,12 +298,16 @@ func (h *Handler) redirectCameraManage(ctx context.Context, b *tgbot.Bot, chatID
 }
 
 func (h *Handler) requireAuthorized(ctx context.Context, b *tgbot.Bot, chatID int64, chatType models.ChatType, userID int64, username, cmd string) bool {
-	if h.authStore.IsAuthorized(chatID) || (chatType == models.ChatTypePrivate && h.isSuperuser(userID)) {
+	if h.isAuthorized(chatID, chatType, userID) {
 		return true
 	}
 	slog.Warn("unauthorized", "chat_id", chatID, "user_id", userID, "username", username, "command", cmd)
 	b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: "This chat is not authorized. Ask a group admin to run /requestaccess."})
 	return false
+}
+
+func (h *Handler) isAuthorized(chatID int64, chatType models.ChatType, userID int64) bool {
+	return h.authStore.IsAuthorized(chatID) || (chatType == models.ChatTypePrivate && h.isSuperuser(userID))
 }
 
 func (h *Handler) isGroupAdmin(ctx context.Context, b *tgbot.Bot, chatID int64, chatType models.ChatType, userID int64) (bool, error) {
@@ -940,10 +981,7 @@ func (h *Handler) cmdCameras(ctx context.Context, b *tgbot.Bot, chatID int64) {
 func (h *Handler) cmdSnap(ctx context.Context, b *tgbot.Bot, chatID int64, user, arg string) {
 	name := strings.Trim(arg, " \t\"'")
 	if name == "" {
-		b.SendMessage(ctx, &tgbot.SendMessageParams{
-			ChatID: chatID,
-			Text:   "Usage: /snap <camera_name>\nUse /cameras to list available cameras.",
-		})
+		h.sendSnapPicker(ctx, b, chatID)
 		return
 	}
 	cam, ok := h.store.Find(name)
@@ -955,6 +993,31 @@ func (h *Handler) cmdSnap(ctx context.Context, b *tgbot.Bot, chatID int64, user,
 		return
 	}
 	h.captureAndSend(ctx, b, chatID, user, cam)
+}
+
+func (h *Handler) sendSnapPicker(ctx context.Context, b *tgbot.Bot, chatID int64) {
+	cams := h.store.List()
+	if len(cams) == 0 {
+		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: "No cameras configured."})
+		return
+	}
+
+	b.SendMessage(ctx, &tgbot.SendMessageParams{
+		ChatID:      chatID,
+		Text:        "Choose a camera to capture:",
+		ReplyMarkup: snapPickerKeyboard(cams),
+	})
+}
+
+func snapPickerKeyboard(cams []camera.Camera) *models.InlineKeyboardMarkup {
+	rows := make([][]models.InlineKeyboardButton, 0, len(cams))
+	for _, cam := range cams {
+		rows = append(rows, []models.InlineKeyboardButton{{
+			Text:         buttonLabel(cam.Name),
+			CallbackData: fmt.Sprintf("snap:%d", cam.ID),
+		}})
+	}
+	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
 func (h *Handler) captureAndSend(ctx context.Context, b *tgbot.Bot, chatID int64, user string, cam camera.Camera) {

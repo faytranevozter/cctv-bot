@@ -54,6 +54,7 @@ func main() {
 		tgbot.WithDefaultHandler(handler.DefaultHandler),
 		tgbot.WithCallbackQueryDataHandler("auth:", tgbot.MatchTypePrefix, handler.CallbackHandler),
 		tgbot.WithCallbackQueryDataHandler("cam:", tgbot.MatchTypePrefix, handler.CallbackHandler),
+		tgbot.WithCallbackQueryDataHandler("snap:", tgbot.MatchTypePrefix, handler.CallbackHandler),
 	)
 	if err != nil {
 		slog.Error("bot creation failed", "error", err)

@@ -46,7 +46,7 @@ cctv-bot/
 - `/start` — Welcome message with command reference.
 - `/help` — Same as `/start`.
 - `/cameras` — List configured cameras with credentials masked.
-- `/snap <camera_name>` — Capture from a named camera.
+- `/snap [camera_name]` — Show a camera picker, or capture from a named camera.
 - `/cameramanage` — Superuser-only button dashboard for adding, removing, and managing camera shortcuts.
 
 ### 4. Camera storage (no database server)
