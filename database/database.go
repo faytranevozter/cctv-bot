@@ -55,6 +55,7 @@ func initDB(db *sql.DB) error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS pending_access_requests (
 			chat_id INTEGER PRIMARY KEY,
+			message_thread_id INTEGER NOT NULL DEFAULT 0,
 			chat_type TEXT NOT NULL,
 			chat_title TEXT,
 			requested_by_id INTEGER NOT NULL,
@@ -68,5 +69,35 @@ func initDB(db *sql.DB) error {
 			return err
 		}
 	}
+	if err := ensureColumn(db, "pending_access_requests", "message_thread_id", `ALTER TABLE pending_access_requests ADD COLUMN message_thread_id INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
 	return nil
+}
+
+func ensureColumn(db *sql.DB, table, column, alter string) error {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var defaultValue any
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec(alter)
+	return err
 }

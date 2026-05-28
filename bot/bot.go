@@ -493,6 +493,7 @@ func (h *Handler) cmdRequestAccess(ctx context.Context, b *tgbot.Bot, update *mo
 
 	req := auth.Request{
 		ChatID:              chatID,
+		MessageThreadID:     msg.MessageThreadID,
 		ChatType:            string(chatType),
 		ChatTitle:           chatTitle(msg.Chat),
 		RequestedByID:       userID,
@@ -646,7 +647,7 @@ func (h *Handler) approveRequest(ctx context.Context, b *tgbot.Bot, chatID int64
 		return
 	}
 	b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: fmt.Sprintf("Approved CCTV bot access request\n\nChat: %s\nChat ID: %d\nApproved by: %s", displayChat(req.ChatTitle, req.ChatID), req.ChatID, displayUser(user))})
-	if _, err := b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: req.ChatID, Text: "This chat is now authorized."}); err != nil {
+	if _, err := b.SendMessage(ctx, sendMessageParams(requestTarget(req), "This chat is now authorized.")); err != nil {
 		slog.Warn("approval notification failed", "chat_id", req.ChatID, "error", err.Error())
 	}
 }
@@ -663,9 +664,13 @@ func (h *Handler) rejectRequest(ctx context.Context, b *tgbot.Bot, chatID int64,
 		return
 	}
 	b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: fmt.Sprintf("Rejected CCTV bot access request\n\nChat: %s\nChat ID: %d\nRejected by: %s", displayChat(req.ChatTitle, req.ChatID), req.ChatID, displayUser(user))})
-	if _, err := b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: req.ChatID, Text: "Access request was rejected."}); err != nil {
+	if _, err := b.SendMessage(ctx, sendMessageParams(requestTarget(req), "Access request was rejected.")); err != nil {
 		slog.Warn("rejection notification failed", "chat_id", req.ChatID, "error", err.Error())
 	}
+}
+
+func requestTarget(req auth.Request) chatTarget {
+	return chatTarget{ChatID: req.ChatID, MessageThreadID: req.MessageThreadID}
 }
 
 func (h *Handler) renderAuthManage(ctx context.Context, b *tgbot.Bot, chatID int64, messageID int, targetID int64) {

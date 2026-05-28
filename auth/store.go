@@ -17,6 +17,7 @@ type AuthorizedChat struct {
 
 type Request struct {
 	ChatID              int64     `json:"chat_id"`
+	MessageThreadID     int       `json:"message_thread_id,omitempty"`
 	ChatType            string    `json:"chat_type"`
 	ChatTitle           string    `json:"chat_title,omitempty"`
 	RequestedByID       int64     `json:"requested_by_id"`
@@ -74,16 +75,17 @@ func (s *Store) RemoveAuthorized(chatID int64) error {
 }
 
 func (s *Store) UpsertPending(req Request) error {
-	_, err := s.db.Exec(`INSERT INTO pending_access_requests (chat_id, chat_type, chat_title, requested_by_id, requested_by_username, reason, requested_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+	_, err := s.db.Exec(`INSERT INTO pending_access_requests (chat_id, message_thread_id, chat_type, chat_title, requested_by_id, requested_by_username, reason, requested_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(chat_id) DO UPDATE SET
+			message_thread_id = excluded.message_thread_id,
 			chat_type = excluded.chat_type,
 			chat_title = excluded.chat_title,
 			requested_by_id = excluded.requested_by_id,
 			requested_by_username = excluded.requested_by_username,
 			reason = excluded.reason,
 			requested_at = excluded.requested_at`,
-		req.ChatID, req.ChatType, req.ChatTitle, req.RequestedByID, req.RequestedByUsername, req.Reason, req.RequestedAt.Format(time.RFC3339))
+		req.ChatID, req.MessageThreadID, req.ChatType, req.ChatTitle, req.RequestedByID, req.RequestedByUsername, req.Reason, req.RequestedAt.Format(time.RFC3339))
 	if err != nil {
 		return fmt.Errorf("upsert pending request: %w", err)
 	}
@@ -102,7 +104,7 @@ func (s *Store) RemovePending(chatID int64) (Request, bool, error) {
 }
 
 func (s *Store) Pending(chatID int64) (Request, bool) {
-	rows, err := s.db.Query(`SELECT chat_id, chat_type, COALESCE(chat_title, ''), requested_by_id, COALESCE(requested_by_username, ''), COALESCE(reason, ''), requested_at FROM pending_access_requests WHERE chat_id = ?`, chatID)
+	rows, err := s.db.Query(`SELECT chat_id, COALESCE(message_thread_id, 0), chat_type, COALESCE(chat_title, ''), requested_by_id, COALESCE(requested_by_username, ''), COALESCE(reason, ''), requested_at FROM pending_access_requests WHERE chat_id = ?`, chatID)
 	if err != nil {
 		return Request{}, false
 	}
@@ -135,7 +137,7 @@ func (s *Store) ListAuthorized() []AuthorizedChat {
 }
 
 func (s *Store) ListPending() []Request {
-	rows, err := s.db.Query(`SELECT chat_id, chat_type, COALESCE(chat_title, ''), requested_by_id, COALESCE(requested_by_username, ''), COALESCE(reason, ''), requested_at FROM pending_access_requests ORDER BY chat_id`)
+	rows, err := s.db.Query(`SELECT chat_id, COALESCE(message_thread_id, 0), chat_type, COALESCE(chat_title, ''), requested_by_id, COALESCE(requested_by_username, ''), COALESCE(reason, ''), requested_at FROM pending_access_requests ORDER BY chat_id`)
 	if err != nil {
 		return nil
 	}
@@ -148,7 +150,7 @@ func scanRequests(rows *sql.Rows) []Request {
 	for rows.Next() {
 		var req Request
 		var requestedAt string
-		if err := rows.Scan(&req.ChatID, &req.ChatType, &req.ChatTitle, &req.RequestedByID, &req.RequestedByUsername, &req.Reason, &requestedAt); err != nil {
+		if err := rows.Scan(&req.ChatID, &req.MessageThreadID, &req.ChatType, &req.ChatTitle, &req.RequestedByID, &req.RequestedByUsername, &req.Reason, &requestedAt); err != nil {
 			continue
 		}
 		req.RequestedAt = parseTime(requestedAt)
