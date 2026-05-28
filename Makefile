@@ -1,10 +1,11 @@
-BINARY      := cctv-bot
-PKG         := github.com/faytranevozter/cctv-bot
-DOCKER_IMG  := cctv-bot:latest
-GO          ?= go
-LDFLAGS     := -s -w
+BINARY     := cctv-bot
+PKG        := github.com/faytranevozter/cctv-bot
+DOCKER_IMG := cctv-bot:latest
+DATA_DIR   := data
+GO         ?= go
+LDFLAGS    := -s -w
 
-.PHONY: help run build install tidy fmt vet test clean docker-build docker-run env
+.PHONY: help run build install tidy fmt vet test clean clean-db docker-build docker-run env
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -36,12 +37,15 @@ clean: ## Remove build artifacts
 	rm -rf bin
 	rm -f $(BINARY)
 
+clean-db: ## Remove local SQLite database files
+	rm -f cctv_bot.db cctv_bot.db-*
+
 env: ## Copy .env.example to .env if missing
 	@test -f .env || cp .env.example .env && echo ".env ready"
 
 docker-build: ## Build docker image
 	docker build -t $(DOCKER_IMG) .
 
-docker-run: ## Run docker image with .env (mounts ./data for cameras.json)
-	mkdir -p data
-	docker run --rm --env-file .env -v $(PWD)/data:/data --name $(BINARY) $(DOCKER_IMG)
+docker-run: ## Run docker image with .env (mounts ./data for SQLite DB)
+	mkdir -p $(DATA_DIR)
+	docker run --rm --env-file .env -v $(PWD)/$(DATA_DIR):/data --name $(BINARY) $(DOCKER_IMG)
