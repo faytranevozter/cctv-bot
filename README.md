@@ -23,7 +23,7 @@ The bot registers these commands with Telegram on startup:
 | --- | --- |
 | `/requestaccess [reason]` | Request access for the current chat. |
 | `/authorized` | Superuser dashboard for pending requests and authorized chats. |
-| `/cameramanage` | Superuser camera management dashboard. |
+| `/cameramanage` | Superuser camera management dashboard for adding, renaming, deleting, and shortcut management. |
 | `/snap [name]` | Show a camera picker, or capture a specific camera by name. |
 | `/cameras` | List configured cameras. |
 | `/help` | Show the command reference. |
@@ -141,7 +141,7 @@ The dashboard shows both authorized chats and pending requests. Authorized chats
 
 Cameras, authorized chats, and pending access requests are stored in SQLite. There is no default camera command; capture from the `/snap` camera picker, by camera name with `/snap <name>`, or by a configured shortcut such as `/gamping`.
 
-When a camera is added from `/cameramanage`, the bot tries to create a shortcut automatically from the camera name:
+When a camera is added from `/cameramanage`, the bot tries to create a shortcut automatically from the camera name. The same dashboard can rename cameras, set/remove shortcuts, preview captures, and delete cameras.
 
 | Camera Name | Auto Shortcut |
 | --- | --- |

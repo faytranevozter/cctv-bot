@@ -759,6 +759,7 @@ func (h *Handler) renderCameraDetail(ctx context.Context, b *tgbot.Bot, chatID i
 func cameraDetailKeyboard(cam camera.Camera) *models.InlineKeyboardMarkup {
 	rows := [][]models.InlineKeyboardButton{
 		{{Text: "Capture", CallbackData: fmt.Sprintf("cam:c:%d", cam.ID)}},
+		{{Text: "Rename", CallbackData: fmt.Sprintf("cam:rn:%d", cam.ID)}},
 		{{Text: "Set Shortcut", CallbackData: fmt.Sprintf("cam:ss:%d", cam.ID)}},
 	}
 	if cam.Shortcut != "" {
@@ -792,7 +793,7 @@ func (h *Handler) handleCameraCallback(ctx context.Context, b *tgbot.Bot, q *mod
 	case "add":
 		h.setPending(q.From.ID, pendingCameraAction{Kind: "add"})
 		b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: "Send camera details:\n\n\"<name>\" <url>\n\nExample:\n\"Front Gate\" rtsp://user:pass@host/stream", ReplyMarkup: cameraBackKeyboard()})
-	case "m", "c", "ss", "rs", "dc", "dd":
+	case "m", "c", "rn", "ss", "rs", "dc", "dd":
 		if len(parts) != 3 {
 			return
 		}
@@ -815,6 +816,14 @@ func (h *Handler) handleCameraAction(ctx context.Context, b *tgbot.Bot, chatID i
 			return
 		}
 		h.captureAndSend(ctx, b, chatID, username, cam)
+	case "rn":
+		cam, ok := h.store.FindByID(cameraID)
+		if !ok {
+			b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: "Camera not found.", ReplyMarkup: cameraBackKeyboard()})
+			return
+		}
+		h.setPending(userID, pendingCameraAction{Kind: "rename", CameraID: cameraID})
+		b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: fmt.Sprintf("Send new name for %q:", cam.Name), ReplyMarkup: cameraBackKeyboard()})
 	case "ss":
 		cam, ok := h.store.FindByID(cameraID)
 		if !ok {
@@ -894,6 +903,8 @@ func (h *Handler) handlePendingCameraInput(ctx context.Context, b *tgbot.Bot, up
 	switch action.Kind {
 	case "add":
 		h.handleAddCameraInput(ctx, b, msg.Chat.ID, msg.From.Username, text)
+	case "rename":
+		h.handleRenameCameraInput(ctx, b, msg.Chat.ID, action.CameraID, text)
 	case "shortcut":
 		h.handleSetShortcutInput(ctx, b, msg.Chat.ID, action.CameraID, text)
 	}
@@ -929,6 +940,31 @@ func (h *Handler) handleAddCameraInput(ctx context.Context, b *tgbot.Bot, chatID
 	}
 	b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: msg})
 	h.cmdCameraManage(ctx, b, chatID, 0)
+}
+
+func (h *Handler) handleRenameCameraInput(ctx context.Context, b *tgbot.Bot, chatID int64, cameraID int64, input string) {
+	name := strings.Trim(input, " \t\"'")
+	err := h.store.RenameByID(cameraID, name)
+	switch {
+	case errors.Is(err, camera.ErrInvalid):
+		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: "Camera name is required."})
+		return
+	case errors.Is(err, camera.ErrNotFound):
+		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: "Camera not found."})
+		return
+	case errors.Is(err, camera.ErrAlreadyExists):
+		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: fmt.Sprintf("Camera %q already exists.", name)})
+		return
+	case err != nil:
+		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: fmt.Sprintf("Failed to rename camera: %s", err.Error())})
+		return
+	}
+
+	h.RegisterCommands(ctx, b)
+	b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: fmt.Sprintf("Renamed camera to %q.", name)})
+	if cam, ok := h.store.FindByID(cameraID); ok {
+		b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: fmt.Sprintf("Updated %q.", cam.Name), ReplyMarkup: cameraDetailKeyboard(cam)})
+	}
 }
 
 func (h *Handler) handleSetShortcutInput(ctx context.Context, b *tgbot.Bot, chatID int64, cameraID int64, input string) {

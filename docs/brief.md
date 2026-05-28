@@ -47,7 +47,7 @@ cctv-bot/
 - `/help` — Same as `/start`.
 - `/cameras` — List configured cameras with credentials masked.
 - `/snap [camera_name]` — Show a camera picker, or capture from a named camera.
-- `/cameramanage` — Superuser-only button dashboard for adding, removing, and managing camera shortcuts.
+- `/cameramanage` — Superuser-only button dashboard for adding, renaming, removing, and managing camera shortcuts.
 
 ### 4. Camera storage (no database server)
 - Cameras are persisted in a JSON file at `${CAMERAS_FILE}` (default `./cameras.json`, `/data/cameras.json` in Docker).

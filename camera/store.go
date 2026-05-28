@@ -113,6 +113,31 @@ func (s *Store) Add(cam Camera) error {
 	return nil
 }
 
+// RenameByID renames a camera by database ID.
+func (s *Store) RenameByID(id int64, name string) error {
+	name = strings.TrimSpace(name)
+	if id == 0 || name == "" {
+		return ErrInvalid
+	}
+
+	cam, ok := s.FindByID(id)
+	if !ok {
+		return ErrNotFound
+	}
+	if existing, ok := s.Find(name); ok && existing.ID != cam.ID {
+		return ErrAlreadyExists
+	}
+
+	res, err := s.db.Exec(`UPDATE cameras SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, name, id)
+	if err != nil {
+		return fmt.Errorf("rename camera: %w", err)
+	}
+	if changed, _ := res.RowsAffected(); changed == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // SetShortcut assigns a shortcut to a camera by case-insensitive camera name.
 func (s *Store) SetShortcut(name, shortcut string) error {
 	name = strings.TrimSpace(name)
