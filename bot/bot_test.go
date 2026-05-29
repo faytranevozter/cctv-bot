@@ -164,22 +164,22 @@ func TestAutoShortcut(t *testing.T) {
 }
 
 func TestTextAndKeyboardRendering(t *testing.T) {
-	req := auth.Request{ChatID: -100, ChatTitle: "Ops", RequestedByID: 7, RequestedByUsername: "operator", Reason: "Need access"}
+	req := auth.Request{ChatID: -100, MessageThreadID: 42, ChatTitle: "Ops", RequestedByID: 7, RequestedByUsername: "operator", Reason: "Need access"}
 	text := requestText("New request", req)
-	for _, want := range []string{"New request", "Chat: Ops", "Chat ID: -100", "Requested by: @operator", "User ID: 7", "Reason: Need access"} {
+	for _, want := range []string{"New request", "Chat: Ops", "Chat ID: -100", "Topic: topic 42", "Requested by: @operator", "User ID: 7", "Reason: Need access"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("requestText() = %q, missing %q", text, want)
 		}
 	}
-	keyboard := requestKeyboard(-100)
-	if keyboard.InlineKeyboard[0][0].CallbackData != "auth:a:-100" || keyboard.InlineKeyboard[0][1].CallbackData != "auth:r:-100" {
+	keyboard := requestKeyboard(-100, 42)
+	if keyboard.InlineKeyboard[0][0].CallbackData != "auth:a:-100:42" || keyboard.InlineKeyboard[0][1].CallbackData != "auth:r:-100:42" {
 		t.Fatalf("requestKeyboard() = %#v, want approve/reject callbacks", keyboard)
 	}
 
 	authorized := []auth.AuthorizedChat{{ChatID: 10, ChatTitle: "Private"}}
-	pending := []auth.Request{{ChatID: 20, ChatTitle: "Group", RequestedByID: 9, RequestedByUsername: "admin"}}
+	pending := []auth.Request{{ChatID: 20, MessageThreadID: 12, ChatTitle: "Group", RequestedByID: 9, RequestedByUsername: "admin"}}
 	listText := authListText(authorized, pending)
-	for _, want := range []string{"Authorized chats:", "1. Private (10)", "Pending requests:", "1. Group (20) from @admin"} {
+	for _, want := range []string{"Authorized chats:", "1. Private (10)", "Pending requests:", "1. Group (20), topic 12 from @admin"} {
 		if !strings.Contains(listText, want) {
 			t.Fatalf("authListText() = %q, missing %q", listText, want)
 		}
@@ -187,6 +187,9 @@ func TestTextAndKeyboardRendering(t *testing.T) {
 	authKeyboard := authListKeyboard(authorized, pending)
 	if len(authKeyboard.InlineKeyboard) != 3 || authKeyboard.InlineKeyboard[2][0].CallbackData != "auth:l" {
 		t.Fatalf("authListKeyboard() = %#v, want manage/pending/refresh rows", authKeyboard)
+	}
+	if authKeyboard.InlineKeyboard[1][0].CallbackData != "auth:a:20:12" || authKeyboard.InlineKeyboard[1][1].CallbackData != "auth:r:20:12" {
+		t.Fatalf("authListKeyboard() = %#v, want topic-scoped pending callbacks", authKeyboard)
 	}
 
 	cams := []camera.Camera{{ID: 1, Name: "Front Gate", Shortcut: "front_gate", URL: "rtsp://user:pass@host/front"}, {ID: 2, Name: "Back", URL: "rtsp://host/back"}}
@@ -223,6 +226,30 @@ func TestDisplayHelpers(t *testing.T) {
 	}
 	if got := displayChat("", 42); got != "Chat 42" {
 		t.Fatalf("displayChat() = %q", got)
+	}
+	if got := displayChatTarget("Group", -100, 12); got != "Group (-100), topic 12" {
+		t.Fatalf("displayChatTarget() = %q", got)
+	}
+	if got := topicLabel(0); got != "general" {
+		t.Fatalf("topicLabel(0) = %q", got)
+	}
+	if got := authorizedAlreadyText(chatTarget{ChatID: -100}); got != "This chat is already authorized." {
+		t.Fatalf("authorizedAlreadyText(chat) = %q", got)
+	}
+	if got := authorizedAlreadyText(chatTarget{ChatID: -100, MessageThreadID: 12}); got != "This topic is already authorized." {
+		t.Fatalf("authorizedAlreadyText(topic) = %q", got)
+	}
+	if got := approvalNotificationText(0); got != "This chat is now authorized." {
+		t.Fatalf("approvalNotificationText(chat) = %q", got)
+	}
+	if got := approvalNotificationText(12); got != "This topic is now authorized." {
+		t.Fatalf("approvalNotificationText(topic) = %q", got)
+	}
+	if got := revokeNotificationText(0); got != "This chat is no longer authorized." {
+		t.Fatalf("revokeNotificationText(chat) = %q", got)
+	}
+	if got := revokeNotificationText(12); got != "This topic is no longer authorized." {
+		t.Fatalf("revokeNotificationText(topic) = %q", got)
 	}
 	if got := displayUser(models.User{ID: 7, Username: "operator"}); got != "@operator" {
 		t.Fatalf("displayUser(username) = %q", got)
