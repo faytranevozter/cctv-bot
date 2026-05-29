@@ -96,6 +96,7 @@ Optional variables:
 | `FFMPEG_BIN` | `ffmpeg` | FFmpeg executable path. |
 | `FFMPEG_TIMEOUT_SEC` | `15` | Capture timeout in seconds. |
 | `MAX_CONCURRENT_CAPTURES` | `3` | Maximum capture jobs running at the same time. |
+| `TIMEZONE` | `Asia/Jakarta` | IANA timezone used for snapshot captions, such as `Asia/Jakarta`, `UTC`, or `America/New_York`. |
 
 Example:
 
@@ -107,7 +108,10 @@ DB_FILE=cctv_bot.db
 FFMPEG_BIN=ffmpeg
 FFMPEG_TIMEOUT_SEC=15
 MAX_CONCURRENT_CAPTURES=3
+TIMEZONE=Asia/Jakarta
 ```
+
+Snapshot captions use `TIMEZONE` and include the location's timezone abbreviation, for example `2026-05-29 21:15:00 WIB`.
 
 ## Authorization
 

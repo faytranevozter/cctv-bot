@@ -1117,11 +1117,7 @@ func (h *Handler) captureAndSend(ctx context.Context, b *tgbot.Bot, target chatT
 		return
 	}
 
-	loc, err := time.LoadLocation("Asia/Jakarta")
-	if err != nil {
-		loc = time.UTC
-	}
-	caption := fmt.Sprintf("%s · %s", cam.Name, time.Now().In(loc).Format("2006-01-02 15:04:05 WIB"))
+	caption := fmt.Sprintf("%s · %s", cam.Name, time.Now().In(h.cfg.Location).Format("2006-01-02 15:04:05 MST"))
 
 	_, sendErr := b.SendPhoto(ctx, &tgbot.SendPhotoParams{
 		ChatID:          target.ChatID,
