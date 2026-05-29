@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -15,6 +16,8 @@ type Config struct {
 	FFmpegBin             string
 	FFmpegTimeoutSec      int
 	MaxConcurrentCaptures int
+	Timezone              string
+	Location              *time.Location
 }
 
 func Load() (*Config, error) {
@@ -24,7 +27,14 @@ func Load() (*Config, error) {
 		FFmpegBin:             envOr("FFMPEG_BIN", "ffmpeg"),
 		FFmpegTimeoutSec:      envOrInt("FFMPEG_TIMEOUT_SEC", 15),
 		MaxConcurrentCaptures: envOrInt("MAX_CONCURRENT_CAPTURES", 3),
+		Timezone:              envOr("TIMEZONE", "Asia/Jakarta"),
 	}
+
+	loc, err := time.LoadLocation(cfg.Timezone)
+	if err != nil {
+		return nil, fmt.Errorf("invalid TIMEZONE %q: %w", cfg.Timezone, err)
+	}
+	cfg.Location = loc
 
 	cfg.BotToken = os.Getenv("TELEGRAM_BOT_TOKEN")
 	if cfg.BotToken == "" {
