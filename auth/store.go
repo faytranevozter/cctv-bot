@@ -8,6 +8,7 @@ import (
 
 type AuthorizedChat struct {
 	ChatID             int64     `json:"chat_id"`
+	MessageThreadID    int       `json:"message_thread_id,omitempty"`
 	ChatType           string    `json:"chat_type,omitempty"`
 	ChatTitle          string    `json:"chat_title,omitempty"`
 	ApprovedByID       int64     `json:"approved_by_id,omitempty"`
@@ -33,7 +34,7 @@ type Store struct {
 func NewStore(db *sql.DB, bootstrapIDs []int64) (*Store, error) {
 	s := &Store{db: db}
 	for _, id := range bootstrapIDs {
-		if id == 0 || s.IsAuthorized(id) {
+		if id == 0 || s.IsAuthorized(id, 0) {
 			continue
 		}
 		if err := s.AddAuthorized(AuthorizedChat{ChatID: id}); err != nil {
@@ -43,31 +44,31 @@ func NewStore(db *sql.DB, bootstrapIDs []int64) (*Store, error) {
 	return s, nil
 }
 
-func (s *Store) IsAuthorized(chatID int64) bool {
+func (s *Store) IsAuthorized(chatID int64, messageThreadID int) bool {
 	var exists int
-	err := s.db.QueryRow(`SELECT 1 FROM authorized_chats WHERE chat_id = ?`, chatID).Scan(&exists)
+	err := s.db.QueryRow(`SELECT 1 FROM authorized_chats WHERE chat_id = ? AND message_thread_id = ?`, chatID, messageThreadID).Scan(&exists)
 	return err == nil
 }
 
 func (s *Store) AddAuthorized(chat AuthorizedChat) error {
 	approvedAt := timeString(chat.ApprovedAt)
-	_, err := s.db.Exec(`INSERT INTO authorized_chats (chat_id, chat_type, chat_title, approved_by_id, approved_by_username, approved_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT(chat_id) DO UPDATE SET
+	_, err := s.db.Exec(`INSERT INTO authorized_chats (chat_id, message_thread_id, chat_type, chat_title, approved_by_id, approved_by_username, approved_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(chat_id, message_thread_id) DO UPDATE SET
 			chat_type = excluded.chat_type,
 			chat_title = excluded.chat_title,
 			approved_by_id = excluded.approved_by_id,
 			approved_by_username = excluded.approved_by_username,
 			approved_at = excluded.approved_at`,
-		chat.ChatID, chat.ChatType, chat.ChatTitle, nullInt(chat.ApprovedByID), chat.ApprovedByUsername, approvedAt)
+		chat.ChatID, chat.MessageThreadID, chat.ChatType, chat.ChatTitle, nullInt(chat.ApprovedByID), chat.ApprovedByUsername, approvedAt)
 	if err != nil {
 		return fmt.Errorf("add authorized chat: %w", err)
 	}
 	return nil
 }
 
-func (s *Store) RemoveAuthorized(chatID int64) error {
-	_, err := s.db.Exec(`DELETE FROM authorized_chats WHERE chat_id = ?`, chatID)
+func (s *Store) RemoveAuthorized(chatID int64, messageThreadID int) error {
+	_, err := s.db.Exec(`DELETE FROM authorized_chats WHERE chat_id = ? AND message_thread_id = ?`, chatID, messageThreadID)
 	if err != nil {
 		return fmt.Errorf("remove authorized chat: %w", err)
 	}
@@ -77,8 +78,7 @@ func (s *Store) RemoveAuthorized(chatID int64) error {
 func (s *Store) UpsertPending(req Request) error {
 	_, err := s.db.Exec(`INSERT INTO pending_access_requests (chat_id, message_thread_id, chat_type, chat_title, requested_by_id, requested_by_username, reason, requested_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(chat_id) DO UPDATE SET
-			message_thread_id = excluded.message_thread_id,
+		ON CONFLICT(chat_id, message_thread_id) DO UPDATE SET
 			chat_type = excluded.chat_type,
 			chat_title = excluded.chat_title,
 			requested_by_id = excluded.requested_by_id,
@@ -92,19 +92,19 @@ func (s *Store) UpsertPending(req Request) error {
 	return nil
 }
 
-func (s *Store) RemovePending(chatID int64) (Request, bool, error) {
-	req, ok := s.Pending(chatID)
+func (s *Store) RemovePending(chatID int64, messageThreadID int) (Request, bool, error) {
+	req, ok := s.Pending(chatID, messageThreadID)
 	if !ok {
 		return Request{}, false, nil
 	}
-	if _, err := s.db.Exec(`DELETE FROM pending_access_requests WHERE chat_id = ?`, chatID); err != nil {
+	if _, err := s.db.Exec(`DELETE FROM pending_access_requests WHERE chat_id = ? AND message_thread_id = ?`, chatID, messageThreadID); err != nil {
 		return Request{}, false, fmt.Errorf("remove pending request: %w", err)
 	}
 	return req, true, nil
 }
 
-func (s *Store) Pending(chatID int64) (Request, bool) {
-	rows, err := s.db.Query(`SELECT chat_id, COALESCE(message_thread_id, 0), chat_type, COALESCE(chat_title, ''), requested_by_id, COALESCE(requested_by_username, ''), COALESCE(reason, ''), requested_at FROM pending_access_requests WHERE chat_id = ?`, chatID)
+func (s *Store) Pending(chatID int64, messageThreadID int) (Request, bool) {
+	rows, err := s.db.Query(`SELECT chat_id, message_thread_id, chat_type, COALESCE(chat_title, ''), requested_by_id, COALESCE(requested_by_username, ''), COALESCE(reason, ''), requested_at FROM pending_access_requests WHERE chat_id = ? AND message_thread_id = ?`, chatID, messageThreadID)
 	if err != nil {
 		return Request{}, false
 	}
@@ -117,7 +117,7 @@ func (s *Store) Pending(chatID int64) (Request, bool) {
 }
 
 func (s *Store) ListAuthorized() []AuthorizedChat {
-	rows, err := s.db.Query(`SELECT chat_id, COALESCE(chat_type, ''), COALESCE(chat_title, ''), COALESCE(approved_by_id, 0), COALESCE(approved_by_username, ''), COALESCE(approved_at, '') FROM authorized_chats ORDER BY chat_id`)
+	rows, err := s.db.Query(`SELECT chat_id, message_thread_id, COALESCE(chat_type, ''), COALESCE(chat_title, ''), COALESCE(approved_by_id, 0), COALESCE(approved_by_username, ''), COALESCE(approved_at, '') FROM authorized_chats ORDER BY chat_id, message_thread_id`)
 	if err != nil {
 		return nil
 	}
@@ -127,7 +127,7 @@ func (s *Store) ListAuthorized() []AuthorizedChat {
 	for rows.Next() {
 		var chat AuthorizedChat
 		var approvedAt string
-		if err := rows.Scan(&chat.ChatID, &chat.ChatType, &chat.ChatTitle, &chat.ApprovedByID, &chat.ApprovedByUsername, &approvedAt); err != nil {
+		if err := rows.Scan(&chat.ChatID, &chat.MessageThreadID, &chat.ChatType, &chat.ChatTitle, &chat.ApprovedByID, &chat.ApprovedByUsername, &approvedAt); err != nil {
 			continue
 		}
 		chat.ApprovedAt = parseTime(approvedAt)
@@ -137,7 +137,7 @@ func (s *Store) ListAuthorized() []AuthorizedChat {
 }
 
 func (s *Store) ListPending() []Request {
-	rows, err := s.db.Query(`SELECT chat_id, COALESCE(message_thread_id, 0), chat_type, COALESCE(chat_title, ''), requested_by_id, COALESCE(requested_by_username, ''), COALESCE(reason, ''), requested_at FROM pending_access_requests ORDER BY chat_id`)
+	rows, err := s.db.Query(`SELECT chat_id, message_thread_id, chat_type, COALESCE(chat_title, ''), requested_by_id, COALESCE(requested_by_username, ''), COALESCE(reason, ''), requested_at FROM pending_access_requests ORDER BY chat_id, message_thread_id`)
 	if err != nil {
 		return nil
 	}

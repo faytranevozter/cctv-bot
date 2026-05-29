@@ -117,7 +117,7 @@ Snapshot captions use `TIMEZONE` and include the location's timezone abbreviatio
 
 The bot no longer uses `ALLOWED_CHAT_IDS`. Access is managed by superusers configured in `SUPERUSER_IDS`.
 
-In Telegram forum supergroups, commands sent inside a topic are answered in the same topic. Access approval/rejection notifications are also sent back to the topic where `/requestaccess` was used. Authorization remains chat-wide: approving a supergroup authorizes the whole chat, not an individual topic.
+In Telegram forum supergroups, commands sent inside a topic are answered in the same topic. Access approval/rejection notifications are also sent back to the topic where `/requestaccess` was used. Authorization is topic-scoped: approving one topic does not authorize other topics in the same supergroup.
 
 Unauthorized chats can request access:
 
@@ -133,7 +133,7 @@ When a request is created, each superuser receives a private message with inline
 [Approve] [Reject]
 ```
 
-Approving a request authorizes the chat and stores it in `DB_FILE`. Rejecting removes the pending request.
+Approving a request authorizes the chat target and stores it in `DB_FILE`. In forum supergroups, the authorized target is the exact topic where `/requestaccess` was used. Rejecting removes the pending request.
 
 Superusers can manage access from their private chat:
 
@@ -142,6 +142,8 @@ Superusers can manage access from their private chat:
 ```
 
 The dashboard shows both authorized chats and pending requests. Authorized chats have a manage button that opens a revoke screen. Pending requests have approve/reject buttons.
+
+`AUTHORIZED_CHAT_IDS` bootstraps only general chat access because it does not include Telegram topic IDs. To authorize a specific forum topic, run `/requestaccess` inside that topic. Existing authorized supergroups are migrated to general-topic access only; each additional topic must request access separately.
 
 ## Storage
 
