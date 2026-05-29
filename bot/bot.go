@@ -209,22 +209,29 @@ func (h *Handler) CallbackHandler(ctx context.Context, b *tgbot.Bot, update *mod
 
 	switch action {
 	case "a", "r", "m", "v":
-		if len(parts) != 3 {
+		if len(parts) != 3 && len(parts) != 4 {
 			return
 		}
 		targetID, err := strconv.ParseInt(parts[2], 10, 64)
 		if err != nil {
 			return
 		}
+		messageThreadID := 0
+		if len(parts) == 4 {
+			messageThreadID, err = strconv.Atoi(parts[3])
+			if err != nil {
+				return
+			}
+		}
 		switch action {
 		case "a":
-			h.approveRequest(ctx, b, chatID, messageID, targetID, q.From)
+			h.approveRequest(ctx, b, chatID, messageID, targetID, messageThreadID, q.From)
 		case "r":
-			h.rejectRequest(ctx, b, chatID, messageID, targetID, q.From)
+			h.rejectRequest(ctx, b, chatID, messageID, targetID, messageThreadID, q.From)
 		case "m":
-			h.renderAuthManage(ctx, b, chatID, messageID, targetID)
+			h.renderAuthManage(ctx, b, chatID, messageID, targetID, messageThreadID)
 		case "v":
-			h.revokeAuthorized(ctx, b, chatID, messageID, targetID)
+			h.revokeAuthorized(ctx, b, chatID, messageID, targetID, messageThreadID)
 		}
 	case "l":
 		h.cmdAuthorized(ctx, b, chatID, messageID)
@@ -251,7 +258,8 @@ func (h *Handler) handleSnapCallback(ctx context.Context, b *tgbot.Bot, q *model
 		b.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{CallbackQueryID: q.ID})
 		return
 	}
-	if !h.isAuthorized(chat.ID, chat.Type, q.From.ID) {
+	target := messageTarget(q.Message.Message)
+	if !h.isAuthorized(target, chat.Type, q.From.ID) {
 		b.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{CallbackQueryID: q.ID, Text: "This chat is not authorized.", ShowAlert: true})
 		return
 	}
@@ -268,7 +276,7 @@ func (h *Handler) handleSnapCallback(ctx context.Context, b *tgbot.Bot, q *model
 		return
 	}
 	b.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{CallbackQueryID: q.ID})
-	h.captureAndSend(ctx, b, messageTarget(q.Message.Message), q.From.Username, cam)
+	h.captureAndSend(ctx, b, target, q.From.Username, cam)
 }
 
 func (h *Handler) normalizeCommand(cmd string) (string, bool) {
@@ -315,16 +323,16 @@ func (h *Handler) redirectCameraManage(ctx context.Context, b *tgbot.Bot, target
 }
 
 func (h *Handler) requireAuthorized(ctx context.Context, b *tgbot.Bot, target chatTarget, chatType models.ChatType, userID int64, username, cmd string) bool {
-	if h.isAuthorized(target.ChatID, chatType, userID) {
+	if h.isAuthorized(target, chatType, userID) {
 		return true
 	}
 	slog.Warn("unauthorized", "chat_id", target.ChatID, "message_thread_id", target.MessageThreadID, "user_id", userID, "username", username, "command", cmd)
-	b.SendMessage(ctx, sendMessageParams(target, "This chat is not authorized. Ask a group admin to run /requestaccess."))
+	b.SendMessage(ctx, sendMessageParams(target, "This topic is not authorized. Ask a group admin to run /requestaccess here."))
 	return false
 }
 
-func (h *Handler) isAuthorized(chatID int64, chatType models.ChatType, userID int64) bool {
-	return h.authStore.IsAuthorized(chatID) || (chatType == models.ChatTypePrivate && h.isSuperuser(userID))
+func (h *Handler) isAuthorized(target chatTarget, chatType models.ChatType, userID int64) bool {
+	return h.authStore.IsAuthorized(target.ChatID, target.MessageThreadID) || (chatType == models.ChatTypePrivate && h.isSuperuser(userID))
 }
 
 func (h *Handler) isGroupAdmin(ctx context.Context, b *tgbot.Bot, chatID int64, chatType models.ChatType, userID int64) (bool, error) {
@@ -468,8 +476,8 @@ func (h *Handler) cmdRequestAccess(ctx context.Context, b *tgbot.Bot, update *mo
 	userID := msg.From.ID
 	username := msg.From.Username
 
-	if h.authStore.IsAuthorized(chatID) || (chatType == models.ChatTypePrivate && h.isSuperuser(userID)) {
-		b.SendMessage(ctx, sendMessageParams(target, "This chat is already authorized."))
+	if h.isAuthorized(target, chatType, userID) {
+		b.SendMessage(ctx, sendMessageParams(target, authorizedAlreadyText(target)))
 		return
 	}
 
@@ -486,7 +494,7 @@ func (h *Handler) cmdRequestAccess(ctx context.Context, b *tgbot.Bot, update *mo
 		}
 	}
 
-	if _, ok := h.authStore.Pending(chatID); ok {
+	if _, ok := h.authStore.Pending(chatID, target.MessageThreadID); ok {
 		b.SendMessage(ctx, sendMessageParams(target, "Access request is already pending."))
 		return
 	}
@@ -530,7 +538,7 @@ func (h *Handler) notifySuperusers(ctx context.Context, b *tgbot.Bot, req auth.R
 		if _, err := b.SendMessage(ctx, &tgbot.SendMessageParams{
 			ChatID:      userID,
 			Text:        requestText("New CCTV bot access request", req),
-			ReplyMarkup: requestKeyboard(req.ChatID),
+			ReplyMarkup: requestKeyboard(req.ChatID, req.MessageThreadID),
 		}); err != nil {
 			slog.Warn("superuser notification failed", "superuser_id", userID, "request_chat_id", req.ChatID, "error", err.Error())
 		}
@@ -542,6 +550,9 @@ func requestText(title string, req auth.Request) string {
 	fmt.Fprintf(&sb, "%s\n\n", title)
 	fmt.Fprintf(&sb, "Chat: %s\n", displayChat(req.ChatTitle, req.ChatID))
 	fmt.Fprintf(&sb, "Chat ID: %d\n", req.ChatID)
+	if req.MessageThreadID != 0 {
+		fmt.Fprintf(&sb, "Topic: %s\n", topicLabel(req.MessageThreadID))
+	}
 	if req.RequestedByUsername != "" {
 		fmt.Fprintf(&sb, "Requested by: @%s\n", req.RequestedByUsername)
 	}
@@ -552,10 +563,10 @@ func requestText(title string, req auth.Request) string {
 	return strings.TrimSpace(sb.String())
 }
 
-func requestKeyboard(chatID int64) *models.InlineKeyboardMarkup {
+func requestKeyboard(chatID int64, messageThreadID int) *models.InlineKeyboardMarkup {
 	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{
-		{Text: "Approve", CallbackData: fmt.Sprintf("auth:a:%d", chatID)},
-		{Text: "Reject", CallbackData: fmt.Sprintf("auth:r:%d", chatID)},
+		{Text: "Approve", CallbackData: authCallback("a", chatID, messageThreadID)},
+		{Text: "Reject", CallbackData: authCallback("r", chatID, messageThreadID)},
 	}}}
 }
 
@@ -585,7 +596,7 @@ func authListText(authorized []auth.AuthorizedChat, pending []auth.Request) stri
 		sb.WriteString("none\n")
 	} else {
 		for i, chat := range authorized {
-			fmt.Fprintf(&sb, "%d. %s (%d)\n", i+1, displayChat(chat.ChatTitle, chat.ChatID), chat.ChatID)
+			fmt.Fprintf(&sb, "%d. %s\n", i+1, displayChatTarget(chat.ChatTitle, chat.ChatID, chat.MessageThreadID))
 		}
 	}
 	sb.WriteString("\nPending requests:\n")
@@ -597,7 +608,7 @@ func authListText(authorized []auth.AuthorizedChat, pending []auth.Request) stri
 			if req.RequestedByUsername != "" {
 				by = "@" + req.RequestedByUsername
 			}
-			fmt.Fprintf(&sb, "%d. %s (%d) from %s\n", i+1, displayChat(req.ChatTitle, req.ChatID), req.ChatID, by)
+			fmt.Fprintf(&sb, "%d. %s from %s\n", i+1, displayChatTarget(req.ChatTitle, req.ChatID, req.MessageThreadID), by)
 		}
 	}
 	return strings.TrimSpace(sb.String())
@@ -607,19 +618,45 @@ func authListKeyboard(authorized []auth.AuthorizedChat, pending []auth.Request) 
 	var rows [][]models.InlineKeyboardButton
 	for _, chat := range authorized {
 		rows = append(rows, []models.InlineKeyboardButton{{
-			Text:         "Manage: " + buttonLabel(displayChat(chat.ChatTitle, chat.ChatID)),
-			CallbackData: fmt.Sprintf("auth:m:%d", chat.ChatID),
+			Text:         "Manage: " + buttonLabel(displayChatTarget(chat.ChatTitle, chat.ChatID, chat.MessageThreadID)),
+			CallbackData: authCallback("m", chat.ChatID, chat.MessageThreadID),
 		}})
 	}
 	for _, req := range pending {
-		label := buttonLabel(displayChat(req.ChatTitle, req.ChatID))
+		label := buttonLabel(displayChatTarget(req.ChatTitle, req.ChatID, req.MessageThreadID))
 		rows = append(rows, []models.InlineKeyboardButton{
-			{Text: "Approve: " + label, CallbackData: fmt.Sprintf("auth:a:%d", req.ChatID)},
-			{Text: "Reject", CallbackData: fmt.Sprintf("auth:r:%d", req.ChatID)},
+			{Text: "Approve: " + label, CallbackData: authCallback("a", req.ChatID, req.MessageThreadID)},
+			{Text: "Reject", CallbackData: authCallback("r", req.ChatID, req.MessageThreadID)},
 		})
 	}
 	rows = append(rows, []models.InlineKeyboardButton{{Text: "Refresh", CallbackData: "auth:l"}})
 	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+func authCallback(action string, chatID int64, messageThreadID int) string {
+	return fmt.Sprintf("auth:%s:%d:%d", action, chatID, messageThreadID)
+}
+
+func displayChatTarget(title string, chatID int64, messageThreadID int) string {
+	label := fmt.Sprintf("%s (%d)", displayChat(title, chatID), chatID)
+	if messageThreadID != 0 {
+		label += ", " + topicLabel(messageThreadID)
+	}
+	return label
+}
+
+func topicLabel(messageThreadID int) string {
+	if messageThreadID == 0 {
+		return "general"
+	}
+	return fmt.Sprintf("topic %d", messageThreadID)
+}
+
+func authorizedAlreadyText(target chatTarget) string {
+	if target.MessageThreadID == 0 {
+		return "This chat is already authorized."
+	}
+	return "This topic is already authorized."
 }
 
 func buttonLabel(s string) string {
@@ -629,89 +666,125 @@ func buttonLabel(s string) string {
 	return s[:29] + "..."
 }
 
-func (h *Handler) approveRequest(ctx context.Context, b *tgbot.Bot, chatID int64, messageID int, targetID int64, user models.User) {
-	req, ok, err := h.authStore.RemovePending(targetID)
+func (h *Handler) approveRequest(ctx context.Context, b *tgbot.Bot, chatID int64, messageID int, targetID int64, messageThreadID int, user models.User) {
+	req, ok, err := h.authStore.RemovePending(targetID, messageThreadID)
 	if err != nil {
-		slog.Error("approve request failed", "chat_id", targetID, "error", err.Error())
-		b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: fmt.Sprintf("Failed to approve chat %d: %s", targetID, err.Error())})
+		slog.Error("approve request failed", "chat_id", targetID, "message_thread_id", messageThreadID, "error", err.Error())
+		b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: fmt.Sprintf("Failed to approve %s: %s", displayChatTarget("", targetID, messageThreadID), err.Error())})
 		return
 	}
 	if !ok {
-		b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: fmt.Sprintf("No pending request for chat %d.", targetID)})
+		b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: fmt.Sprintf("No pending request for %s.", displayChatTarget("", targetID, messageThreadID))})
 		return
 	}
-	approved := auth.AuthorizedChat{ChatID: req.ChatID, ChatType: req.ChatType, ChatTitle: req.ChatTitle, ApprovedByID: user.ID, ApprovedByUsername: user.Username, ApprovedAt: time.Now().UTC()}
+	approved := auth.AuthorizedChat{ChatID: req.ChatID, MessageThreadID: req.MessageThreadID, ChatType: req.ChatType, ChatTitle: req.ChatTitle, ApprovedByID: user.ID, ApprovedByUsername: user.Username, ApprovedAt: time.Now().UTC()}
 	if err := h.authStore.AddAuthorized(approved); err != nil {
-		slog.Error("save approval failed", "chat_id", targetID, "error", err.Error())
-		b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: fmt.Sprintf("Failed to save approval for chat %d: %s", targetID, err.Error())})
+		slog.Error("save approval failed", "chat_id", targetID, "message_thread_id", messageThreadID, "error", err.Error())
+		b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: fmt.Sprintf("Failed to save approval for %s: %s", displayChatTarget(req.ChatTitle, req.ChatID, req.MessageThreadID), err.Error())})
 		return
 	}
-	b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: fmt.Sprintf("Approved CCTV bot access request\n\nChat: %s\nChat ID: %d\nApproved by: %s", displayChat(req.ChatTitle, req.ChatID), req.ChatID, displayUser(user))})
-	if _, err := b.SendMessage(ctx, sendMessageParams(requestTarget(req), "This chat is now authorized.")); err != nil {
-		slog.Warn("approval notification failed", "chat_id", req.ChatID, "error", err.Error())
+	b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: approvalText(req, user)})
+	if _, err := b.SendMessage(ctx, sendMessageParams(requestTarget(req), approvalNotificationText(req.MessageThreadID))); err != nil {
+		slog.Warn("approval notification failed", "chat_id", req.ChatID, "message_thread_id", req.MessageThreadID, "error", err.Error())
 	}
 }
 
-func (h *Handler) rejectRequest(ctx context.Context, b *tgbot.Bot, chatID int64, messageID int, targetID int64, user models.User) {
-	req, ok, err := h.authStore.RemovePending(targetID)
+func (h *Handler) rejectRequest(ctx context.Context, b *tgbot.Bot, chatID int64, messageID int, targetID int64, messageThreadID int, user models.User) {
+	req, ok, err := h.authStore.RemovePending(targetID, messageThreadID)
 	if err != nil {
-		slog.Error("reject request failed", "chat_id", targetID, "error", err.Error())
-		b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: fmt.Sprintf("Failed to reject chat %d: %s", targetID, err.Error())})
+		slog.Error("reject request failed", "chat_id", targetID, "message_thread_id", messageThreadID, "error", err.Error())
+		b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: fmt.Sprintf("Failed to reject %s: %s", displayChatTarget("", targetID, messageThreadID), err.Error())})
 		return
 	}
 	if !ok {
-		b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: fmt.Sprintf("No pending request for chat %d.", targetID)})
+		b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: fmt.Sprintf("No pending request for %s.", displayChatTarget("", targetID, messageThreadID))})
 		return
 	}
-	b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: fmt.Sprintf("Rejected CCTV bot access request\n\nChat: %s\nChat ID: %d\nRejected by: %s", displayChat(req.ChatTitle, req.ChatID), req.ChatID, displayUser(user))})
+	b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: rejectionText(req, user)})
 	if _, err := b.SendMessage(ctx, sendMessageParams(requestTarget(req), "Access request was rejected.")); err != nil {
-		slog.Warn("rejection notification failed", "chat_id", req.ChatID, "error", err.Error())
+		slog.Warn("rejection notification failed", "chat_id", req.ChatID, "message_thread_id", req.MessageThreadID, "error", err.Error())
 	}
+}
+
+func approvalNotificationText(messageThreadID int) string {
+	if messageThreadID == 0 {
+		return "This chat is now authorized."
+	}
+	return "This topic is now authorized."
+}
+
+func approvalText(req auth.Request, user models.User) string {
+	return decisionText("Approved CCTV bot access request", "Approved by", req, user)
+}
+
+func rejectionText(req auth.Request, user models.User) string {
+	return decisionText("Rejected CCTV bot access request", "Rejected by", req, user)
+}
+
+func decisionText(title, actorLabel string, req auth.Request, user models.User) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s\n\n", title)
+	fmt.Fprintf(&sb, "Chat: %s\n", displayChat(req.ChatTitle, req.ChatID))
+	if req.MessageThreadID != 0 {
+		fmt.Fprintf(&sb, "Topic: %s\n", topicLabel(req.MessageThreadID))
+	}
+	fmt.Fprintf(&sb, "%s: %s", actorLabel, displayUser(user))
+	return sb.String()
 }
 
 func requestTarget(req auth.Request) chatTarget {
 	return chatTarget{ChatID: req.ChatID, MessageThreadID: req.MessageThreadID}
 }
 
-func (h *Handler) renderAuthManage(ctx context.Context, b *tgbot.Bot, chatID int64, messageID int, targetID int64) {
+func (h *Handler) renderAuthManage(ctx context.Context, b *tgbot.Bot, chatID int64, messageID int, targetID int64, messageThreadID int) {
 	var target auth.AuthorizedChat
 	found := false
 	for _, chat := range h.authStore.ListAuthorized() {
-		if chat.ChatID == targetID {
+		if chat.ChatID == targetID && chat.MessageThreadID == messageThreadID {
 			target = chat
 			found = true
 			break
 		}
 	}
 	if !found {
-		b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: fmt.Sprintf("Authorized chat %d was not found.", targetID), ReplyMarkup: backKeyboard()})
+		b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: fmt.Sprintf("Authorized target %s was not found.", displayChatTarget("", targetID, messageThreadID)), ReplyMarkup: backKeyboard()})
 		return
 	}
 	text := fmt.Sprintf("Authorized chat\n\nChat: %s\nChat ID: %d", displayChat(target.ChatTitle, target.ChatID), target.ChatID)
+	if target.MessageThreadID != 0 {
+		text += fmt.Sprintf("\nTopic: %s", topicLabel(target.MessageThreadID))
+	}
 	if target.ApprovedByUsername != "" {
 		text += fmt.Sprintf("\nApproved by: @%s", target.ApprovedByUsername)
 	}
 	if !target.ApprovedAt.IsZero() {
 		text += fmt.Sprintf("\nApproved at: %s", target.ApprovedAt.Format(time.RFC3339))
 	}
-	b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: text, ReplyMarkup: revokeKeyboard(target.ChatID)})
+	b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: text, ReplyMarkup: revokeKeyboard(target.ChatID, target.MessageThreadID)})
 }
 
-func (h *Handler) revokeAuthorized(ctx context.Context, b *tgbot.Bot, chatID int64, messageID int, targetID int64) {
-	if err := h.authStore.RemoveAuthorized(targetID); err != nil {
-		slog.Error("revoke failed", "chat_id", targetID, "error", err.Error())
-		b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: fmt.Sprintf("Failed to revoke chat %d: %s", targetID, err.Error())})
+func (h *Handler) revokeAuthorized(ctx context.Context, b *tgbot.Bot, chatID int64, messageID int, targetID int64, messageThreadID int) {
+	if err := h.authStore.RemoveAuthorized(targetID, messageThreadID); err != nil {
+		slog.Error("revoke failed", "chat_id", targetID, "message_thread_id", messageThreadID, "error", err.Error())
+		b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: fmt.Sprintf("Failed to revoke %s: %s", displayChatTarget("", targetID, messageThreadID), err.Error())})
 		return
 	}
-	b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: fmt.Sprintf("Revoked access\n\nChat ID: %d", targetID), ReplyMarkup: backKeyboard()})
-	if _, err := b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: targetID, Text: "This chat is no longer authorized."}); err != nil {
-		slog.Warn("revoke notification failed", "chat_id", targetID, "error", err.Error())
+	b.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: fmt.Sprintf("Revoked access\n\n%s", displayChatTarget("", targetID, messageThreadID)), ReplyMarkup: backKeyboard()})
+	if _, err := b.SendMessage(ctx, sendMessageParams(chatTarget{ChatID: targetID, MessageThreadID: messageThreadID}, revokeNotificationText(messageThreadID))); err != nil {
+		slog.Warn("revoke notification failed", "chat_id", targetID, "message_thread_id", messageThreadID, "error", err.Error())
 	}
 }
 
-func revokeKeyboard(chatID int64) *models.InlineKeyboardMarkup {
+func revokeNotificationText(messageThreadID int) string {
+	if messageThreadID == 0 {
+		return "This chat is no longer authorized."
+	}
+	return "This topic is no longer authorized."
+}
+
+func revokeKeyboard(chatID int64, messageThreadID int) *models.InlineKeyboardMarkup {
 	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		{{Text: "Revoke Access", CallbackData: fmt.Sprintf("auth:v:%d", chatID)}},
+		{{Text: "Revoke Access", CallbackData: authCallback("v", chatID, messageThreadID)}},
 		{{Text: "Back to List", CallbackData: "auth:l"}},
 	}}
 }
